@@ -129,6 +129,6 @@ player_cache_pos:	ds.l	1		; offset into player_cache
 player_cache:		ds.l	255
 
 
-player_data:	incbin	sanxion.ymp
+player_data:	incbin	motus.ymp
 
 

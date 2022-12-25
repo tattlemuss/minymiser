@@ -1,21 +1,70 @@
 #!/usr/bin/env python3
 
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def percent(inp, outp):
+	return inp * 100.0 / (inp + outp)
+
+class Stats:
+	def __init__(self):
+		self.offsets = []
+		self.counts = []
+
+def find_quick_match(data, pos, dist):
+	best_value = 0
+	match = (0,0)
+
+	for offset in range(1, dist):
+		test_pos = pos - offset
+		if test_pos < 0:
+			break
+
+		# Find match length
+		count = 0
+		while pos + count < len(data):
+			if data[pos + count] != data[test_pos + count]:
+				break
+			count += 1
+
+		# heuristic: choose longest match
+		value = count
+		if value > best_value:
+			match = (offset, count)
+			best_value = value
+	return match
+
+def encode(data, search_len, stats):
+	pos = 0
+	data_len = len(data)
+	lit_count = 0
+	match_count = 0
+	match_bytes = 0
+
+	while pos < data_len:
+		(offset, count) = find_quick_match(data, pos, search_len)
+		if count > 1:
+			# Good match, probably
+			#print("Dist {} Len {}".format(offset, count))
+			pos += count
+			match_bytes += count
+			match_count += 1
+			stats.offsets.append(offset)
+			stats.counts.append(count)
+		else:
+			#print("Literal {}".format(data[pos]))
+			pos += 1
+			lit_count += 1
+	#print("Done")
+	print("Matches {} Literals {} ({:.2f})%".format(match_count, lit_count, percent(match_count, lit_count)))
+	print("Match bytes {} of {} {:.1f}%".format(match_bytes, data_len, 100 * match_bytes / data_len))
+
 def read_ym(strm, outstrm):
 	head = strm.read(4)
 	print("============== new file ================")
 
 	reg_dict = {}
-
-	CACHE_SIZE = 255
-	recent_buff = [None] * CACHE_SIZE
-
-	in_count = 0
-	out_count = 0
-	in_recent = 0
-	out_recent = 0
-
-	packed = []
-	recent_pos = 0
 
 	packed = bytearray()
 
@@ -23,46 +72,23 @@ def read_ym(strm, outstrm):
 	#assert((len(all_data) % 14) == 0)
 
 	num_vbls = int(len(all_data) / 14)
+	stats = Stats()
 
-	for curr_vbl in range(0, num_vbls):
-		regs = bytearray(14)
-		for r in range(0, 14):
-			regs[r] = all_data[r * num_vbls + curr_vbl]
+	for r in range(0, 14):
+		base = r * num_vbls
+		reg_0 = all_data[base:base+num_vbls]
+		print("==== reg {} ====".format(r))
+		encode(reg_0, 8192, stats)
 
-		regs = bytes(regs)
+	plt.scatter(stats.offsets, stats.counts, s=1, alpha=0.5)
+	#print(offsets)
+	#plt.hist(offsets, bins=128)
+	#plt.hist(stats.counts, bins=128)
 
-		if regs in reg_dict:
-			in_count += 1
-		else:
-			reg_dict[regs] = True
-			out_count += 1
 
-		# Encode using the "recent buffer"
-		try:
-			r_index = recent_buff.index(regs)
-			in_recent += 1
-			packed.append(r_index + 1)
-		except ValueError:
-			# Not in cache
-			out_recent += 1
-			recent_buff[recent_pos] = regs
-			recent_pos = (recent_pos + 1) % CACHE_SIZE
+	plt.show()
 
-			packed.append(0)
-			packed += regs
 
-	print("In", in_count)
-	print("Out:", out_count, " = ", out_count * 14 / 1024, "KB")
-	print("Percent", in_count * 100.0 / (in_count + out_count))
-
-	print("======== Recent ")
-	print("In {}".format(in_recent))
-	print("Out: {} -> {}". format(out_recent, out_recent * 15))
-	print("Hit Percent", in_recent * 100.0 / (in_recent + out_recent))
-	print("Output data {} bytes".format(len(packed)))
-	outstrm.write(packed)
-
-#read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))
-read_ym(open("sanxion.ym", "rb"), open("sanxion.ymp", "wb"))
-read_ym(open("motus.ym", "rb"), open("motus.ymp", "wb"))
-#read_ym(open("test.ym", "rb"), open("test.ymp", "wb"))
+read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))
+#read_ym(open("sanxion.ym", "rb"), open("sanxion.ymp", "wb"))
+#read_ym(open("motus.ym", "rb"), open("motus.ymp", "wb"))

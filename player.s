@@ -94,11 +94,12 @@ old_c:	ds.l	1
 NUM_REGS		equ	14
 cache_size		equ	512		; number of saved bytes per register
 
-ymunp_stream_read_ptr	equ	0		; position in packed data we are reading from
-ymunp_match_read_ptr	equ	4		; X when copying, the src pointer (either in cache or in original stream)
-ymunp_cache_start_ptr	equ	8		; start address of our cache
-ymunp_cache_write_ptr	equ	12		; X current next write address of cache
-ymunp_cache_end_ptr	equ	16		; X end address of cache
+						; KEEP THESE 3 IN ORDER
+ymunp_match_read_ptr	equ	0		; X when copying, the src pointer (either in cache or in original stream)
+ymunp_cache_write_ptr	equ	4		; X current next write address of cache
+ymunp_cache_end_ptr	equ	8		; X end address of cache
+ymunp_stream_read_ptr	equ	12		; position in packed data we are reading from
+ymunp_cache_start_ptr	equ	16		; start address of our cache
 ymunp_cache_size_w	equ	20		; X size of cache in bytes
 ymunp_size_count_w	equ	22		; number of bytes remaining to copy. Decremented at start of update.
 ymunp_size		equ	24		; structure size
@@ -133,6 +134,7 @@ player_update:
 	lea	player_state,a0
 	lea	output_buffer,a6
 	moveq	#NUM_REGS-1,d1
+	move.w	#ymunp_size,d2			; d2 = stream structure size
 stream_update:
 	; a0	= ymunp struct
 	subq.w	#1,ymunp_size_count_w(a0)
@@ -180,26 +182,23 @@ literals:
 
 stream_copy_one:
 	; Copy byte from either the cache or the literals in the stream
-	move.l	ymunp_match_read_ptr(a0),a1
-	move.l	ymunp_cache_write_ptr(a0),a2
+	movem.l	ymunp_match_read_ptr(a0),a1/a2/a3	; a1 = match read, a2 = cache write, a3 = loop addr
 	move.b	(a1)+,d0			; d0 = output result
 	move.b	d0,(a2)+			; add to cache
 
 	; Handle either the read or write pointers hitting the end of the cache
-	cmp.l	ymunp_cache_end_ptr(a0),a1	; loop?
+	cmp.l	a3,a1				; loop?
 	bne.s	noloop_cache_read
 	sub.w	ymunp_cache_size_w(a0),a1	; move back in cache
 noloop_cache_read:
-	cmp.l	ymunp_cache_end_ptr(a0),a2	; loop?
+	cmp.l	a3,a2				; loop?
 	bne.s	noloop_cache_write
 	sub.w	ymunp_cache_size_w(a0),a2	; move back in cache
 noloop_cache_write:
-	move.l	a1,ymunp_match_read_ptr(a0)
-	move.l	a2,ymunp_cache_write_ptr(a0)
-	
+	movem.l	a1/a2,ymunp_match_read_ptr(a0)
 	; d0 is "output" here
 	move.b	d0,(a6)+			; write to output buffer
-	lea	ymunp_size(a0),a0		; next stream state
+	add.w	d2,a0				; next stream structure
 	dbf	d1,stream_update
 	bra.s	ym_write
 

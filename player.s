@@ -213,18 +213,20 @@ valid_count:
 
 ym_write:
 	lea	output_buffer(pc),a6
+	lea	$ffff8800.w,a0
+	lea	$ffff8802.w,a1
 
 r	set	0
 	rept	NUM_REGS
-	ifne	r-13
-		move.b	#r,$ffff8800.w
-		move.b	(a6)+,$ffff8802.w
+	ifne	r-13					; Buzzer envelope
+		move.b	#r,(a0)
+		move.b	(a6)+,(a1)
 	else
 		; Buzzer variant
 		move.b	(a6)+,d0
 		bmi.s	.skip_write
-		move.b	#r,$ffff8800.w
-		move.b	(a6)+,$ffff8802.w
+		move.b	#r,(a0)
+		move.b	d0,(a1)
 .skip_write:
 	endif
 r	set	r+1
@@ -245,6 +247,6 @@ player_state:	ds.b	ymunp_size*NUM_REGS
 output_buffer:	ds.b	NUM_REGS
 
 		even
-player_data:	incbin	led2.ymp
+;player_data:	incbin	led2.ymp
 ;player_data:	incbin	sanxion.ymp
-;player_data:	incbin	motus.ymp
+player_data:	incbin	motus.ymp

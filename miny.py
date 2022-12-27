@@ -209,5 +209,6 @@ def read_ym(strm, outstrm):
 	#	print(l)
 
 #read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
-read_ym(open("sanxion.ym", "rb"), open("sanxion.ymp", "wb"))
-read_ym(open("motus.ym", "rb"), open("motus.ymp", "wb"))
+#read_ym(open("sanxion.ym", "rb"), open("sanxion.ymp", "wb"))
+#read_ym(open("motus.ym", "rb"), open("motus.ymp", "wb"))
+read_ym(open("led2.ym", "rb"), open("led2.ymp", "wb"))

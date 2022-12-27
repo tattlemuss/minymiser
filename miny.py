@@ -10,11 +10,11 @@ class Stats:
 		self.offsets = []
 		self.counts = []
 
-def find_quick_match(data, pos, dist):
+def find_quick_match(data, pos, dist, multiple):
 	best_value = 0
 	match = (0,0)
 
-	for offset in range(1, dist):
+	for offset in range(multiple, dist, multiple):
 		test_pos = pos - offset
 		if test_pos < 0:
 			break
@@ -26,6 +26,9 @@ def find_quick_match(data, pos, dist):
 				break
 			count += 1
 
+		# Reduce to set of N bytes
+		count = int(count / multiple) * multiple
+
 		# heuristic: choose longest match
 		value = count
 		if value > best_value:
@@ -33,7 +36,7 @@ def find_quick_match(data, pos, dist):
 			best_value = value
 	return match
 
-def create_tokens(data, search_len, stats):
+def create_tokens(data, search_len, stats, multiple):
 	pos = 0
 	data_len = len(data)
 	lit_count = 0
@@ -44,7 +47,7 @@ def create_tokens(data, search_len, stats):
 	open_literal = bytearray()
 
 	while pos < data_len:
-		(offset, count) = find_quick_match(data, pos, search_len)
+		(offset, count) = find_quick_match(data, pos, search_len, multiple)
 		if count > 1:
 			# Good match, probably
 			#print("Dist {} Len {}".format(offset, count))
@@ -60,9 +63,10 @@ def create_tokens(data, search_len, stats):
 			packing.append(("M", count, offset, pos - count))	# last is for debug
 		else:
 			#print("Literal {}".format(data[pos]))
-			open_literal.append(data[pos])
-			lit_count += 1
-			pos += 1
+			for n in range(0, multiple):
+				open_literal.append(data[pos])
+				lit_count += 1
+				pos += 1
 
 	if len(open_literal) != 0:
 		packing.append(("L", open_literal))
@@ -73,7 +77,7 @@ def create_tokens(data, search_len, stats):
 	print("Match bytes {} of {} {:.1f}%".format(match_bytes, data_len, 100 * match_bytes / data_len))
 	return packing
 
-def unpack(input):
+def unpack(input, multiple):
 	class Input:
 		def __init__(self, input):
 			self.input = input
@@ -93,6 +97,7 @@ def unpack(input):
 			count = cmd & 0x7f
 			if count == 0:
 				count = i.byte() << 8 | i.byte()
+			count *= multiple
 			for x in range(0, count):
 				output.append(i.byte())
 		else:
@@ -102,12 +107,14 @@ def unpack(input):
 			offset = i.byte()
 			if offset == 0:
 				offset = i.byte() << 8 | i.byte()
+			count *= multiple
+			offset *= multiple
 			for x in range(0, count):
 				v = output[len(output) - offset]
 				output.append(v)
 	return output
 
-def create_packed(packed):
+def create_bytestream(packed, multiple):
 	""" Format:
 	
 		byte		bit 7: 1 == literals 0 == match
@@ -128,6 +135,8 @@ def create_packed(packed):
 
 	def output_count(count, literal_flag):
 		assert(count > 0)
+		assert((count % multiple) == 0)
+		count = int(count / multiple)
 		if count < 128:
 			output.append(count | literal_flag)
 		else:
@@ -137,6 +146,8 @@ def create_packed(packed):
 
 	def output_offset(offset):
 		assert(offset > 0)
+		assert((offset % multiple) == 0)
+		offset = int(offset / multiple)
 		if offset < 256:
 			output.append(offset)
 		else:
@@ -159,31 +170,63 @@ def create_packed(packed):
 			output_offset(offset)
 	return output
 
-def read_ym(strm, outstrm):
+def all_in_one(unpacked_data, search_size, stats, multiple):
+	tokens = create_tokens(unpacked_data, search_size, stats, multiple)
+	packed_bytes = create_bytestream(tokens, multiple)
+
+	u = unpack(packed_bytes, multiple)
+	print(len(u))
+	assert(bytes(u) == unpacked_data)
+	return packed_bytes
+
+def get_channel(all_data, num_vbls, reg):
+	base = reg * num_vbls
+	return all_data[base:base+num_vbls]
+
+def interleave(list1, list2):
+	import itertools
+	return bytearray(itertools.chain(*zip(list1, list2)))
+
+
+def read_ym(fname, outfname):
+	print("============== new file: {} ================".format(fname))
+	strm = open(fname, "rb")
 	head = strm.read(4)
-	print("============== new file ================")
 	all_data = strm.read()
+	strm.close()
+
 	num_vbls = int(len(all_data) / 14)
 	stats = Stats()
 
+	raw = [None] * 14
 	packed = [None] * 14
 	for r in range(0, 14):
-		base = r * num_vbls
-		reg_0 = all_data[base:base+num_vbls]
-		print("==== reg {} ====".format(r))
-		tokens = create_tokens(reg_0, 511, stats)
+		raw[r] = get_channel(all_data, num_vbls, r)
 
+	for r0, r1 in ((0,1), (2,3), (4,5)):
+		print("==== regs: {} {} ====".format(r0, r1))
+		tmp = interleave(raw[r0], raw[r1])
+		packed_bytes = all_in_one(tmp, 1023, stats, 2)
+		print(len(packed_bytes))
+
+		packed_bytes1 = all_in_one(raw[r0], 511, stats, 1)
+		packed_bytes2 = all_in_one(raw[r1], 511, stats, 1)
+		print(len(packed_bytes1) + len(packed_bytes2))
+
+	"""
+	for r in range(0, 14):
+		print("==== reg {} ====".format(r))
+		tokens = create_tokens(raw[r], 511, stats, 1)
 		for t in tokens:
 			print(t)
 
-		packed_bytes = create_packed(tokens)
-
+		packed_bytes = create_bytestream(tokens)
 		print(len(packed_bytes))
 		
 		# Check unpack process
 		u = unpack(packed_bytes)
 		print(len(u))
-		assert(bytes(u) == reg_0)
+		assert(bytes(u) == raw[r])
 
 		packed[r] = packed_bytes
 
@@ -195,8 +238,10 @@ def read_ym(strm, outstrm):
 		outstrm.write(struct.pack(">I", offset))
 		offset += len(packed[r])
 
+	outstrm  = open(outfname, "wb")
 	for r in range(0, 14):
 		outstrm.write(packed[r])
+	outstrm.close()
 
 	#plt.scatter(stats.offsets, stats.counts, s=1, alpha=0.5)
 	#plt.show()
@@ -207,8 +252,9 @@ def read_ym(strm, outstrm):
 
 	#for l in pack[0]:
 	#	print(l)
+	"""
 
 #read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
-#read_ym(open("sanxion.ym", "rb"), open("sanxion.ymp", "wb"))
-#read_ym(open("motus.ym", "rb"), open("motus.ymp", "wb"))
-read_ym(open("led2.ym", "rb"), open("led2.ymp", "wb"))
+read_ym("sanxion.ym", "sanxion.ymp")
+read_ym("motus.ym", "motus.ymp")
+read_ym("led2.ym", "led2.ymp")

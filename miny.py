@@ -57,7 +57,7 @@ def create_tokens(data, search_len, stats):
 				packing.append(("L", open_literal))
 				open_literal = bytearray()
 
-			packing.append(("M", count, offset))
+			packing.append(("M", count, offset, pos - count))	# last is for debug
 		else:
 			#print("Literal {}".format(data[pos]))
 			open_literal.append(data[pos])
@@ -74,7 +74,6 @@ def create_tokens(data, search_len, stats):
 	return packing
 
 def unpack(input):
-
 	class Input:
 		def __init__(self, input):
 			self.input = input
@@ -155,7 +154,7 @@ def create_packed(packed):
 			output_count(count, 0x80)
 			output += lits
 		else:
-			count, offset = p[1:]
+			count, offset = p[1:3]
 			output_count(count, 0)
 			output_offset(offset)
 	return output
@@ -163,33 +162,42 @@ def create_packed(packed):
 def read_ym(strm, outstrm):
 	head = strm.read(4)
 	print("============== new file ================")
-
-	reg_dict = {}
-
-	packed = bytearray()
-
 	all_data = strm.read()
-	#assert((len(all_data) % 14) == 0)
-
 	num_vbls = int(len(all_data) / 14)
 	stats = Stats()
 
-	total = 0
+	packed = [None] * 14
 	for r in range(0, 14):
 		base = r * num_vbls
 		reg_0 = all_data[base:base+num_vbls]
 		print("==== reg {} ====".format(r))
-		tokens = create_tokens(reg_0, 512, stats)
+		tokens = create_tokens(reg_0, 511, stats)
 
-		b = create_packed(tokens)
-		print(len(b))
-		u = unpack(b)
+		for t in tokens:
+			print(t)
+
+		packed_bytes = create_packed(tokens)
+
+		print(len(packed_bytes))
+		
+		# Check unpack process
+		u = unpack(packed_bytes)
 		print(len(u))
-
-		total += len(b)
 		assert(bytes(u) == reg_0)
 
-	print("Total size ", total)
+		packed[r] = packed_bytes
+
+	# Output offsets
+	import struct
+	offset = 14*4
+	for r in range(0, 14):
+		print(offset)
+		outstrm.write(struct.pack(">I", offset))
+		offset += len(packed[r])
+
+	for r in range(0, 14):
+		outstrm.write(packed[r])
+
 	#plt.scatter(stats.offsets, stats.counts, s=1, alpha=0.5)
 	#plt.show()
 	#plt.hist(stats.offsets, bins=128)
@@ -201,5 +209,5 @@ def read_ym(strm, outstrm):
 	#	print(l)
 
 #read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
-#read_ym(open("sanxion.ym", "rb"), open("sanxion.ymp", "wb"))
+read_ym(open("sanxion.ym", "rb"), open("sanxion.ymp", "wb"))
 read_ym(open("motus.ym", "rb"), open("motus.ymp", "wb"))

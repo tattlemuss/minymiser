@@ -129,7 +129,6 @@ player_init:
 	rts
 
 ; a0 = input structure
-; a6 = output
 player_update:
 	lea	player_state,a0
 	lea	output_buffer,a6
@@ -196,6 +195,7 @@ noloop_cache_read:
 	sub.w	ymunp_cache_size_w(a0),a2	; move back in cache
 noloop_cache_write:
 	movem.l	a1/a2,ymunp_match_read_ptr(a0)
+
 	; d0 is "output" here
 	move.b	d0,(a6)+			; write to output buffer
 	add.w	d2,a0				; next stream structure
@@ -232,14 +232,6 @@ r	set	0
 r	set	r+1
 	endr
 	rts
-
-;	; a2 is now the YM data
-;r	set	0
-;	rept	NUM_REGS
-;	move.b	#r,$ffff8800.w
-;	move.b	(a2)+,$ffff8802.w
-;r	set	r+1
-;	endr
 
 		even
 cache:		ds.b	cache_size*NUM_REGS

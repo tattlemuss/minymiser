@@ -108,7 +108,7 @@ class PackFormat1:
 				output_offset(offset)
 		return output
 
-	def unpack(self, input, multiple):
+	def unpack(self, input, multiple, check):
 		class Input:
 			def __init__(self, input):
 				self.input = input
@@ -196,6 +196,9 @@ class PackFormat2:
 				i += 1
 
 			literals = lit[1]
+			assert((len(literals) % multiple) == 0)
+			assert((match[1] % multiple) == 0)
+			assert((match[2] % multiple) == 0)
 			litcount = int(len(literals) / multiple)
 			matchcount = int(match[1] / multiple)
 			matchoffset = int(match[2] / multiple)
@@ -229,7 +232,8 @@ The final literals value is that 16-bit value. For instance, a literals length o
 					output.append(count - already)
 				else:
 					if count + already + 254 <= 253:
-						output.append(254, count - already - 254)
+						output.append(254)
+						output.append(count - already - 254)
 					else:
 						# More than 254+already
 						# Special case for 255-512?
@@ -253,8 +257,7 @@ The final literals value is that 16-bit value. For instance, a literals length o
 
 		return output
 
-	def unpack(self, input, multiple):
-		return
+	def unpack(self, input, multiple, check):
 		class Input:
 			def __init__(self, input):
 				self.input = input
@@ -269,26 +272,48 @@ The final literals value is that 16-bit value. For instance, a literals length o
 		output = bytearray()
 		while i.pos < len(input):
 			cmd = i.byte()
-			if cmd & 0x80:
-				# Literals
-				count = cmd & 0x7f
-				if count == 0:
-					count = i.byte() << 8 | i.byte()
-				count *= multiple
-				for x in range(0, count):
-					output.append(i.byte())
-			else:
-				count = cmd & 0x7f
-				if count == 0:
-					count = i.byte() << 8 | i.byte()
-				offset = i.byte()
-				if offset == 0:
-					offset = i.byte() << 8 | i.byte()
-				count *= multiple
-				offset *= multiple
-				for x in range(0, count):
-					v = output[len(output) - offset]
-					output.append(v)
+			long_offset = cmd & 0x80
+			lit_count = (cmd >> 4) & 7
+			match_count = cmd & 0xf
+
+			if lit_count == 7:
+				lit_add = i.byte()
+				if lit_add <= 253:
+					lit_count += lit_add
+				elif lit_add == 254:
+					lit_count += lit_add
+					lit_count += i.byte()
+				elif lit_add == 255:
+					lit_count = i.byte() << 8
+					lit_count += i.byte()
+
+			lit_count *= multiple
+			for x in range(0, lit_count):
+				output.append(i.byte())
+
+			if match_count == 15:
+				lit_add = i.byte()
+				if lit_add <= 253:
+					match_count += lit_add
+				elif lit_add == 254:
+					match_count += lit_add
+					match_count += i.byte()
+				elif lit_add == 255:
+					match_count = i.byte() << 8
+					match_count += i.byte()
+
+			match_offset = i.byte()
+			if long_offset != 0:
+				match_offset = (match_offset << 8) + i.byte()
+
+			match_count *= multiple
+			match_offset *= multiple
+			for x in range(0, match_count):
+				v = output[len(output) - match_offset]
+				output.append(v)
+
+			if check != None:
+				assert(check[:len(output)] == output)
 		return output
 
 def find_quick_match(data, pos, dist, multiple, pack_format, cache):
@@ -305,6 +330,8 @@ def find_quick_match(data, pos, dist, multiple, pack_format, cache):
 			break
 		if test_pos < 0:
 			break
+		if (offset % multiple) != 0:
+			continue
 
 		# Find match length
 		count = 0
@@ -385,7 +412,7 @@ def all_in_one(unpacked_data, search_size, stats, multiple, pack_format):
 	packed_bytes = pack_format.create_bytestream(tokens, multiple)
 
 	print("Packed size: {}".format(len(packed_bytes)))
-	u = pack_format.unpack(packed_bytes, multiple)
+	u = pack_format.unpack(packed_bytes, multiple, unpacked_data)
 	assert(bytes(u) == unpacked_data)
 	#print("Unpack check OK")
 	return packed_bytes
@@ -474,14 +501,18 @@ def read_ym2(fname, outfname, pack_format, settings):
 	#	print(l)
 
 #read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
-pack_format = PackFormat1()
+pack_formats = (PackFormat1(), PackFormat2())
 settings = Settings()
 settings.search_dist = 512
-read_ym("sanxion.ym", "sanxion.ymp", pack_format, settings)
-#read_ym2("sanxion.ym", "sanxion.ymp2", pack_format, settings)
+for format in range(0, 2):
+	for grouping in ('all', 'grouped'):
+		pack_format = pack_formats[format]
+		fmtname = ['ymp', 'ymp2'][format]
 
-read_ym("motus.ym", "motus.ymp", pack_format, settings)
-#read_ym2("motus.ym", "motus.ymp2", pack_format, settings)
-
-read_ym("led2.ym", "led2.ymp", pack_format, settings)
-#read_ym2("led2.ym", "led2.ymp2", pack_format, settings)
+		for fname in ['sanxion', 'motus', 'led2']:
+			in_name = fname + ".ym"
+			outname = "{}.{}.{}".format(fname, grouping, fmtname)
+			if grouping == 'all':
+				read_ym(in_name, outname, pack_format, settings)
+			else:
+				read_ym2(in_name, outname, pack_format, settings)

@@ -15,19 +15,27 @@ class Stats:
 		self.counts = []
 
 class MatchCache:
+	""" Stores locations where a given byte has already been seen """
 	def __init__(self, data):
 		self.cache = {}
 
 	def add(self, value, offset):
 		if value in self.cache:
-			self.cache[value].append(offset)
+			# Newest values go at front
+			self.cache[value].insert(0, offset)
 		else:
 			self.cache[value] = [offset]
 
+	def get(self, value):
+		if value in self.cache:
+			return self.cache[value]
+		else:
+			return ()
+
 	def cull(self, value, pos):
 		if value in self.cache:
-			while self.cache[value][0] < pos:
-				self.cache[value].pop_front()
+			while self.cache[value][-1] < pos:
+				self.cache[value].pop()
 
 class PackFormat1:
 	def __init__(self):
@@ -283,12 +291,18 @@ The final literals value is that 16-bit value. For instance, a literals length o
 					output.append(v)
 		return output
 
-def find_quick_match(data, pos, dist, multiple, pack_format):
+def find_quick_match(data, pos, dist, multiple, pack_format, cache):
 	best_cost = 100000.0
 	match = (0,0)
 
-	for offset in range(multiple, dist, multiple):
-		test_pos = pos - offset
+	# Find the recent matches for this char
+	curr_value = data[pos]
+	cache_hits = cache.get(curr_value)
+
+	for test_pos in cache_hits:
+		offset = pos - test_pos
+		if offset > dist:
+			break
 		if test_pos < 0:
 			break
 
@@ -316,6 +330,7 @@ def find_quick_match(data, pos, dist, multiple, pack_format):
 		if cost < best_cost:
 			match = (offset, count)
 			best_cost = cost
+
 	return match
 
 def create_tokens(data, search_len, stats, multiple, pack_format):
@@ -327,13 +342,17 @@ def create_tokens(data, search_len, stats, multiple, pack_format):
 
 	packing = []
 	open_literal = bytearray()
+	cache = MatchCache(data)
 
 	while pos < data_len:
-		(offset, count) = find_quick_match(data, pos, search_len, multiple, pack_format)
+		(offset, count) = find_quick_match(data, pos, search_len, multiple, pack_format, cache)
 		if count > multiple:
 			# Good match, probably
 			#print("Dist {} Len {}".format(offset, count))
-			pos += count
+			for n in range(0, count):
+				cache.add(data[pos], pos)
+				cache.cull(data[pos], pos - search_len)
+				pos += 1
 			match_bytes += count
 			match_count += 1
 			stats.offsets.append(offset)
@@ -348,6 +367,8 @@ def create_tokens(data, search_len, stats, multiple, pack_format):
 			for n in range(0, multiple):
 				open_literal.append(data[pos])
 				lit_count += 1
+				cache.add(data[pos], pos)
+				cache.cull(data[pos], pos - search_len)
 				pos += 1
 
 	if len(open_literal) != 0:
@@ -364,8 +385,8 @@ def all_in_one(unpacked_data, search_size, stats, multiple, pack_format):
 	packed_bytes = pack_format.create_bytestream(tokens, multiple)
 
 	print("Packed size: {}".format(len(packed_bytes)))
-	#u = pack_format.unpack(packed_bytes, multiple)
-	#assert(bytes(u) == unpacked_data)
+	u = pack_format.unpack(packed_bytes, multiple)
+	assert(bytes(u) == unpacked_data)
 	#print("Unpack check OK")
 	return packed_bytes
 
@@ -453,14 +474,14 @@ def read_ym2(fname, outfname, pack_format, settings):
 	#	print(l)
 
 #read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
-pack_format = PackFormat2()
+pack_format = PackFormat1()
 settings = Settings()
 settings.search_dist = 512
 read_ym("sanxion.ym", "sanxion.ymp", pack_format, settings)
-read_ym2("sanxion.ym", "sanxion.ymp2", pack_format, settings)
+#read_ym2("sanxion.ym", "sanxion.ymp2", pack_format, settings)
 
 read_ym("motus.ym", "motus.ymp", pack_format, settings)
-read_ym2("motus.ym", "motus.ymp2", pack_format, settings)
+#read_ym2("motus.ym", "motus.ymp2", pack_format, settings)
 
 read_ym("led2.ym", "led2.ymp", pack_format, settings)
-read_ym2("led2.ym", "led2.ymp2", pack_format, settings)
+#read_ym2("led2.ym", "led2.ymp2", pack_format, settings)

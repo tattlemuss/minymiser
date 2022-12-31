@@ -2,6 +2,23 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+reg_names = [
+	"Per Lo A",
+	"Per Hi A",
+	"Per Lo B",
+	"Per Hi B",
+	"Per Lo C",
+	"Per Hi C",
+	"Per Noise",
+	"Mixer",
+	"Vol A",
+	"Vol B",
+	"Vol C",
+	"Per Lo Env",
+	"Per Hi Env",
+	"Env Shape"
+]
+
 def percent(inp, outp):
 	return inp * 100.0 / (inp + outp)
 
@@ -39,7 +56,7 @@ class MatchCache:
 
 class PackFormat1:
 	def __init__(self):
-		pass
+		self.desc = "Original format"
 
 	def calc_match_cost(self, count, offset, multiple):
 		count = int(count / multiple)
@@ -147,17 +164,20 @@ class PackFormat1:
 
 class PackFormat2:
 	def __init__(self):
-		pass
+		self.desc = "lzsa format"
 
 	def calc_match_cost(self, count, offset, multiple):
 		count = int(count / multiple)
 		offset = int(offset / multiple)
 
-		cost = 2		# initial 4 bits, 1 byte for offset
-		if count >= 16:
+		cost = 1		# initial 4 bits, 1 byte for offset
+		if count <= 253 + 15:
 			cost += 1
-		if count >= 256 + 16:
-			cost += 1
+		else:
+			if count + 15 + 254 <= 253:
+				cost += 2
+			else:
+				cost += 3
 
 		if offset >= 256:
 			cost += 1
@@ -317,7 +337,7 @@ The final literals value is that 16-bit value. For instance, a literals length o
 		return output
 
 def find_quick_match(data, pos, dist, multiple, pack_format, cache):
-	best_cost = 100000.0
+	best_cost = 1.0
 	match = (0,0)
 
 	# Find the recent matches for this char
@@ -426,8 +446,7 @@ def interleave(list1, list2):
 	return bytearray(itertools.chain(*zip(list1, list2)))
 
 def read_ym(fname, outfname, pack_format, settings):
-	#pack_format = PackFormat2()
-	print("============== new file: {} ================".format(fname))
+	print("============== allregs: {} {} ================".format(fname, pack_format.desc))
 	strm = open(fname, "rb")
 	head = strm.read(4)
 	all_data = strm.read()
@@ -458,8 +477,14 @@ def read_ym(fname, outfname, pack_format, settings):
 		outstrm.write(packed[r])
 	outstrm.close()
 
+	bar_count = len(packed)
+	sizes = list(len(p) for p in packed)
+	plt.bar(np.arange(bar_count), sizes)
+	plt.xticks(np.arange(bar_count), reg_names, rotation=45)
+	plt.show()
+
 def read_ym2(fname, outfname, pack_format, settings):
-	print("============== new file 2: {} ================".format(fname))
+	print("============== grouped: {} {} ================".format(fname, pack_format.desc))
 	strm = open(fname, "rb")
 	head = strm.read(4)
 	all_data = strm.read()
@@ -496,16 +521,61 @@ def read_ym2(fname, outfname, pack_format, settings):
 	for r in range(0, stream_count):
 		outstrm.write(packeds[r])
 	outstrm.close()
-
 	#for l in pack[0]:
 	#	print(l)
 
+def read_single(fname, outfname, pack_format, settings):
+	print("============== new file all: {} ================".format(fname))
+	strm = open(fname, "rb")
+	head = strm.read(4)
+	all_data = strm.read()
+	strm.close()
+
+	num_vbls = int(len(all_data) / 14)
+	stats = Stats()
+
+	packed = all_in_one(all_data, settings.search_dist, stats, 1, pack_format)
+	outstrm  = open(outfname, "wb")
+	outstrm.write(packed)
+	outstrm.close()
+
+def read_delta(fname, outfname, settings):
+	print("============== delta: {} ================".format(fname))
+	strm = open(fname, "rb")
+	head = strm.read(4)
+	all_data = strm.read()
+	strm.close()
+
+	num_vbls = int(len(all_data) / 14)
+	stats = Stats()
+
+	raw = [None] * 14
+	packed = [None] * 14
+	for r in range(0, 14):
+		raw[r] = get_channel(all_data, num_vbls, r)
+
+	packed = bytearray()
+	count = 0
+	for i in range(1, num_vbls):
+		mask = 0
+		for r in range(0, 14):
+			if raw[r][i] != raw[r][i-1]:
+				mask |= 1
+			mask <<= 1
+		packed.append(mask >> 8)
+		packed.append(mask & 0xff)
+		for r in range(0, 14):
+			if raw[r][i] != raw[r][i-1]:
+				packed.append(raw[r][i])
+
+	print("Delta size: {} -> {}".format(len(all_data), len(packed)))
+
 #read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
-pack_formats = (PackFormat1(), PackFormat2())
 settings = Settings()
 settings.search_dist = 512
+"""pack_formats = (PackFormat1(), PackFormat2())
 for format in range(0, 2):
-	for grouping in ('all', 'grouped'):
+	for grouping in ('all', 'grouped', 'single'):
 		pack_format = pack_formats[format]
 		fmtname = ['ymp', 'ymp2'][format]
 
@@ -514,5 +584,13 @@ for format in range(0, 2):
 			outname = "{}.{}.{}".format(fname, grouping, fmtname)
 			if grouping == 'all':
 				read_ym(in_name, outname, pack_format, settings)
-			else:
+			elif grouping == "grouped":
 				read_ym2(in_name, outname, pack_format, settings)
+			else:
+				read_single(in_name, outname, pack_format, settings)
+"""
+
+#read_ym("motus.ym", "test.ymp", PackFormat2(), settings)
+read_delta("motus.ym", "test.ymp", settings)
+read_delta("led2.ym", "test.ymp", settings)
+read_delta("sanxion.ym", "test.ymp", settings)

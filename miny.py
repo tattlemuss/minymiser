@@ -477,11 +477,11 @@ def read_ym(fname, outfname, pack_format, settings):
 		outstrm.write(packed[r])
 	outstrm.close()
 
-	bar_count = len(packed)
-	sizes = list(len(p) for p in packed)
-	plt.bar(np.arange(bar_count), sizes)
-	plt.xticks(np.arange(bar_count), reg_names, rotation=45)
-	plt.show()
+	#bar_count = len(packed)
+	#sizes = list(len(p) for p in packed)
+	#plt.bar(np.arange(bar_count), sizes)
+	#plt.xticks(np.arange(bar_count), reg_names, rotation=45)
+	#plt.show()
 
 def read_ym2(fname, outfname, pack_format, settings):
 	print("============== grouped: {} {} ================".format(fname, pack_format.desc))
@@ -573,7 +573,7 @@ def read_delta(fname, outfname, settings):
 #read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
 settings = Settings()
 settings.search_dist = 512
-"""pack_formats = (PackFormat1(), PackFormat2())
+pack_formats = (PackFormat1(), PackFormat2())
 for format in range(0, 2):
 	for grouping in ('all', 'grouped', 'single'):
 		pack_format = pack_formats[format]
@@ -588,7 +588,6 @@ for format in range(0, 2):
 				read_ym2(in_name, outname, pack_format, settings)
 			else:
 				read_single(in_name, outname, pack_format, settings)
-"""
 
 #read_ym("motus.ym", "test.ymp", PackFormat2(), settings)
 read_delta("motus.ym", "test.ymp", settings)

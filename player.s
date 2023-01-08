@@ -96,19 +96,19 @@ cache_size		equ	512		; number of saved bytes per register
 
 						; KEEP THESE 3 IN ORDER
 ymunp_match_read_ptr	equ	0		; X when copying, the src pointer (either in cache or in original stream)
-ymunp_cache_write_ptr	equ	4		; X current next write address of cache
-ymunp_cache_end_ptr	equ	8		; X end address of cache
-ymunp_stream_read_ptr	equ	12		; position in packed data we are reading from
-ymunp_cache_start_ptr	equ	16		; start address of our cache
-ymunp_cache_size_w	equ	20		; X size of cache in bytes
-ymunp_size_count_w	equ	22		; number of bytes remaining to copy. Decremented at start of update.
-ymunp_size		equ	24		; structure size
+ymunp_stream_read_ptr	equ	4		; position in packed data we are reading from
+ymunp_copy_count_w	equ	8		; number of bytes remaining to copy. Decremented at start of update.
+ymunp_size		equ	10		; structure size
 
+; -----------------------------------------------------------------------
 player_init:
-	lea	player_state(pc),a1
+	; "globals" first
 	lea	cache(pc),a2
+	move.l	a2,cache_write_ptr
+	move.w	#cache_size,tmp
+
+	lea	player_state(pc),a1
 	; a1 = state data
-	; a2 = cache
 	move.l	a0,a3
 	; a3 = copy of packed file start
 	moveq.l	#NUM_REGS-1,d0
@@ -118,29 +118,27 @@ player_init:
 	add.l	(a0)+,d1
 	move.l	d1,ymunp_stream_read_ptr(a1)		; ymunp_stream_read_ptr
 	clr.l	ymunp_match_read_ptr(a1)		; ymunp_match_read_ptr
-	move.l	a2,ymunp_cache_start_ptr(a1)		; ymunp_cache_start_ptr
-	move.l	a2,ymunp_cache_write_ptr(a1)		; ymunp_cache_write_ptr
-	lea	cache_size(a2),a2
-	move.l	a2,ymunp_cache_end_ptr(a1)		; ymunp_cache_end_ptr
-	move.w	#cache_size,ymunp_cache_size_w(a1)	; ymunp_cache_size_w
-	move.w	#1,ymunp_size_count_w(a1)		; ymunp_size_count_w
+	move.w	#1,ymunp_copy_count_w(a1)		; ymunp_copy_count_w
 	lea	ymunp_size(a1),a1			; next stream state
 	dbf	d0,.fill
 	rts
 
 ; a0 = input structure
 player_update:
-	lea	player_state,a0
-	lea	output_buffer,a6
-	moveq	#NUM_REGS-1,d1
-	move.w	#ymunp_size,d2			; d2 = stream structure size
+	lea	player_state,a0				; a0 = streams state
+	lea	output_buffer,a6			; a6 = YM buffer
+	move.l	cache_write_ptr(pc),a2			; a2 = cache write ptr
+	lea	cache+cache_size(pc),a3			; a3 = cache end ptr (constant!)
+	moveq	#NUM_REGS-1,d1				; d1 = loop counter
+	move.w	#ymunp_size,d2				; d2 = stream structure size
+	move.w	#cache_size,d3				; d3 = cache size
 stream_update:
 	; a0	= ymunp struct
-	subq.w	#1,ymunp_size_count_w(a0)
-	bne.s	stream_copy_one			; still in copying state
+	subq.w	#1,ymunp_copy_count_w(a0)
+	bne.s	stream_copy_one				; still in copying state
 
-	; Set up next ymunp_match_read_ptr and ymunp_size_count_w here
-	move.l	ymunp_stream_read_ptr(a0),a1	; a1 = packed data stream
+	; Set up next ymunp_match_read_ptr and ymunp_copy_count_w here
+	move.l	ymunp_stream_read_ptr(a0),a1		; a1 = packed data stream
 	moveq	#0,d0
 	move.b	(a1)+,d0
 	; Match or reference?
@@ -151,21 +149,23 @@ stream_update:
 	; a1 is the stream read ptr
 	; d0 is the pre-read count value
 	bsr.s	read_extended_number
-	move.w	d0,ymunp_size_count_w(a0)
+	move.w	d0,ymunp_copy_count_w(a0)
 
 	; Now read offset
 	moveq	#0,d0
 	move.b	(a1)+,d0
 	bsr.s	read_extended_number
-	move.l	a1,ymunp_stream_read_ptr(a0)	; remember stream ptr now, before trashing a1
+	move.l	a1,ymunp_stream_read_ptr(a0)		; remember stream ptr now, before trashing a1
 
 	; Apply offset backwards from where we are writing
-	move.l	ymunp_cache_write_ptr(a0),a1
-	sub.l	d0,a1
-	cmp.l	ymunp_cache_start_ptr(a0),a1
-	bge.s	no_loop2
-	add.w	ymunp_cache_size_w(a0),a1
-no_loop2:
+	move.l	a2,a1					; current cache write ptr
+	add.w	d3,a1					; add cache size
+							; this value is still modulo "cache offset"
+	sub.l	d0,a1					; apply reverse offset
+	cmp.l	a3,a1					; past cache end?
+	blt.s	.ptr_ok
+	sub.w	d3,a1					; subtract cache size again
+.ptr_ok:
 	move.l	a1,ymunp_match_read_ptr(a0)
 	bra.s	stream_copy_one
 literals:
@@ -173,32 +173,35 @@ literals:
 	; a1 is the stream read ptr
 	; d0 is the pre-read count value
 	bsr.s	read_extended_number
-	move.w	d0,ymunp_size_count_w(a0)
-	move.l	a1,ymunp_match_read_ptr(a0)	; use the current packed stream address
-	add.l	d0,a1				; skip bytes in input stream
+	move.w	d0,ymunp_copy_count_w(a0)
+	move.l	a1,ymunp_match_read_ptr(a0)		; use the current packed stream address
+	add.l	d0,a1					; skip bytes in input stream
 	move.l	a1,ymunp_stream_read_ptr(a0)
 	; Falls through to do the copy
 
 stream_copy_one:
 	; Copy byte from either the cache or the literals in the stream
-	movem.l	ymunp_match_read_ptr(a0),a1/a2/a3	; a1 = match read, a2 = cache write, a3 = loop addr
+	move.l	ymunp_match_read_ptr(a0),a1	; a1 = match read
+	; a2 = cache write, a3 = loop addr
 	move.b	(a1)+,d0			; d0 = output result
-	move.b	d0,(a2)+			; add to cache
+	move.b	d0,(a2)				; add to cache. Don't need to increment
 
-	; Handle either the read or write pointers hitting the end of the cache
-	cmp.l	a3,a1				; loop?
+	; Handle the *read* pointer hitting the end of the cache
+	; The write pointer check is done in one single go since all sizes are the same
+	; This check is done even if literals are copied, it just won't ever pass the check
+	cmp.l	a3,a1				; has match read ptr hit end of cache?
 	bne.s	noloop_cache_read
-	sub.w	ymunp_cache_size_w(a0),a1	; move back in cache
+	sub.w	d3,a1				; move back in cache
 noloop_cache_read:
-	cmp.l	a3,a2				; loop?
-	bne.s	noloop_cache_write
-	sub.w	ymunp_cache_size_w(a0),a2	; move back in cache
-noloop_cache_write:
-	movem.l	a1/a2,ymunp_match_read_ptr(a0)
+	move.l	a1,ymunp_match_read_ptr(a0)
 
 	; d0 is "output" here
 	move.b	d0,(a6)+			; write to output buffer
+
+	add.w	d3,a2				; next cache_write_ptr
+	add.w	d3,a3				; next cache_end ptr
 	add.w	d2,a0				; next stream structure
+
 	dbf	d1,stream_update
 	bra.s	ym_write
 
@@ -212,6 +215,7 @@ valid_count:
 	rts
 
 ym_write:
+	; We could write these in reverse order and reuse a6?
 	lea	output_buffer(pc),a6
 	lea	$ffff8800.w,a0
 	lea	$ffff8802.w,a1
@@ -231,14 +235,32 @@ r	set	0
 	endif
 r	set	r+1
 	endr
+
+	; Update the "write to cache" variables
+	addq.l	#1,cache_write_ptr
+	subq.w	#1,tmp
+	bne.s	.no_cache_loop
+	move.w	#cache_size,tmp
+	; Roll base cache_write pointers
+	sub.l	#cache_size,cache_write_ptr
+.no_cache_loop:
 	rts
+; -----------------------------------------------------------------------
+
 
 		even
-cache:		ds.b	cache_size*NUM_REGS
+;player_data:	incbin	led2.all.ymp
+;player_data:	incbin	sanxion.all.ymp
+
+; -----------------------------------------------------------------------
+
+; 
+tmp:		ds.w	1
+cache_write_ptr:ds.l	1
+
 player_state:	ds.b	ymunp_size*NUM_REGS
+cache:		ds.b	cache_size*NUM_REGS
 output_buffer:	ds.b	NUM_REGS
-
 		even
-;player_data:	incbin	led2.ymp
-;player_data:	incbin	sanxion.ymp
-player_data:	incbin	motus.ymp
+
+player_data:	incbin	motus.all.ymp

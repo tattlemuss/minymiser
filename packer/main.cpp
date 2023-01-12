@@ -8,103 +8,22 @@
 #define		INPUT_SIZE		(640000)
 #define		REG_COUNT		(14)
 // ---------------------------------------------------------------------------
-class OutputBuffer
+class OutputBuffer : public std::vector<uint8_t>
 {
 public:
-	OutputBuffer()
-	{
-		memset(m_data, 0, sizeof(m_data));
-		m_data[0] = 0x1;
-		m_writeShift = 0;
-		m_pCurrBits = NULL;
-		m_pNext = m_data + 1U;
-
-	}
-
-	~OutputBuffer()
-	{
-	}
-
-	void WriteBit(uint8_t bitVal)
-	{
-		if (m_writeShift == 0)
-		{
-			// Grab a new byte
-			m_pCurrBits = m_pNext;		// This is where bits will next go
-			m_pNext++;					// Next free pos
-		}
-		
-		// Set the bit in currBits
-		*m_pCurrBits |= (bitVal << m_writeShift);
-
-		if (m_writeShift == 7)
-		{
-			m_pCurrBits = NULL;
-			m_writeShift = 0;
-			return;
-		}
-		m_writeShift++;
-	}
-
-	void WriteBits(uint32_t bitVal, uint32_t numBits)
-	{
-		uint32_t shift = numBits;
-		// e.g. "4, 3, 2, 1"
-		while (shift != 0)
-		{
-			WriteBit((bitVal >> (shift - 1)) & 1);
-			--shift;
-		}
-	}
-
-	void WriteByte(uint8_t byte)
-	{
-		*m_pNext = byte;
-		m_pNext++;
-	}
-	
-	int WriteToFile(const char* pFilename)
-	{
-		FILE* pOutfile = fopen(pFilename, "wb");
-		if (!pOutfile)
-		{
-			printf("Can't read file\n");
-			return 1;
-		}
-		int wBytes = fwrite(m_data, 1, m_pNext - m_data, pOutfile);
-		fclose(pOutfile);
-		return 0;
-	}	
-
-private:
-	
-	uint8_t			m_writeShift;			// which bit to write into
-	uint8_t*		m_pNext;				// pointer to next free empty byte
-	uint8_t*		m_pCurrBits;			// where bits should be written out
-		
-	uint8_t			m_data[INPUT_SIZE];		// data buffer
 };
-
-
-void WriteLengthArray(OutputBuffer& ob, const uint8_t* pArray, size_t count)
-{
-	// Write sets of 4 bits
-	for (uint32_t i = 0; i < count; ++i)
-	{
-		ob.WriteBits(pArray[i], 4);
-	}
-}
 
 // ----------------------------------------------------------------------------
 //	LZ STRUCTURES
 // ----------------------------------------------------------------------------
 // Describes a prior match in the input stream
-struct MatchPair
+struct Token
 {
 	bool IsMatch() const { return length != 0; }
+	bool IsLiteral() const { return length == 0; }
 	uint32_t EncodedBytesCount() const { return (length == 0) ?  1 : length; }
 
-	void SetLiteral(uint32_t literalPosition)
+	void SetLiteral(uint8_t literalPosition)
 	{
 		this->length = 0;
 		this->offset = literalPosition;
@@ -118,17 +37,10 @@ struct MatchPair
 	
 	uint32_t GetLength() const { return length; }
 	uint32_t GetOffset() const { return offset; }
+	uint8_t GetLiteral() const { return offset; }
 private:	
 	uint32_t	length;			// 0 for literal
-	uint32_t	offset;			// Offset to previous match if match, else location of literal in input buffer
-};
-
-// ----------------------------------------------------------------------------
-// Stores the set of matches for any byte in the input stream.
-struct MatchList
-{
-	//std::vector<MatchPair>	m_list;		// Set of multiple matches found
-	MatchPair best;
+	uint32_t	offset;			// Offset to previous match if match, else value of literal in input buffer
 };
 
 // ---------------------------------------------------------------------------
@@ -138,15 +50,15 @@ struct MatchCache
 };
 
 // ---------------------------------------------------------------------------
-MatchPair FindLongestMatch(
+Token FindLongestMatch(
 		const uint8_t* pData, uint32_t data_size, MatchCache& cache,
 		uint32_t pos,
 		uint32_t max_dist)
 {
 	// Scan back to find matches
 	uint32_t best_length = 0;
-	MatchPair best_pair;
-	best_pair.SetLiteral(pos);
+	Token best_pair;
+	best_pair.SetLiteral(pData[pos]);
 
 	// Scan backwards
 	uint32_t offset = 1;
@@ -186,13 +98,10 @@ MatchPair FindLongestMatch(
 }
 
 // ---------------------------------------------------------------------------
-void ScanMatches(const uint8_t* pData, uint32_t data_size, uint32_t max_dist)
+void MatchGreedy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
+	std::vector<Token>& matches)
 {
-	/*
-		NOTE: this is a very slow N^2 algorithm. We can cache results 
-		based on the starting patterns to make it much quicker.
-	*/
-	MatchList* pMatchLists = new MatchList[data_size];
+	matches.clear();
 	MatchCache cache;
 
 	uint32_t match_bytes = 0;
@@ -201,7 +110,7 @@ void ScanMatches(const uint8_t* pData, uint32_t data_size, uint32_t max_dist)
 
 	while (head < data_size)
 	{
-		MatchPair best = FindLongestMatch(pData, data_size, cache,
+		Token best = FindLongestMatch(pData, data_size, cache,
 				head, max_dist);
 
 		if (best.IsMatch())
@@ -214,13 +123,70 @@ void ScanMatches(const uint8_t* pData, uint32_t data_size, uint32_t max_dist)
 			//printf("Literal\n");
 			literal_bytes++;
 		}
+		matches.push_back(best);
 		head += best.EncodedBytesCount();
 	}
 
 	printf("Match size..%u, Literal size..%u\n", match_bytes, literal_bytes);
-	delete [] pMatchLists;
 }
 
+void EncodeCountV1(OutputBuffer& output, uint32_t count, uint8_t literal_flag)
+{
+	if (count < 128)
+		output.push_back(count | literal_flag);
+	else
+	{
+		output.push_back(0 | literal_flag);
+		output.push_back(count >> 8);
+		output.push_back(count & 255);
+	}
+}
+
+void EncodeOffsetV1(OutputBuffer& output, uint32_t offset)
+{
+	assert(offset > 0);
+	if (offset < 256)
+		output.push_back(offset);
+	else
+	{
+		output.push_back(0);
+		output.push_back(offset >> 8);
+		output.push_back(offset & 255);
+	}
+}
+
+// ----------------------------------------------------------------------------
+void EncodeV1(OutputBuffer& output, const std::vector<Token>& matches)
+{
+	size_t index = 0;
+	while (index < matches.size())
+	{
+		// Read all literals
+		size_t numLits = 0;
+		size_t litIndex = index;
+		while (litIndex < matches.size() && matches[litIndex].IsLiteral())
+			++litIndex;
+
+		size_t litCount = litIndex - index;
+		if (litCount)
+		{
+			// Encode the literal
+			EncodeCountV1(output, litCount, 0x80);
+			for (size_t i = index; i < litIndex; ++i)
+				output.push_back(matches[i].GetLiteral());
+		}
+
+		index = litIndex;
+		if (index < matches.size())
+		{
+			// Match
+			assert(matches[index].IsMatch());
+			EncodeCountV1(output, matches[index].GetLength(), 0x0);
+			EncodeOffsetV1(output, matches[index].GetOffset());
+			index ++;
+		}
+	}
+}
 // ----------------------------------------------------------------------------
 int ProcessFile(const uint8_t* data, uint32_t data_size)
 {
@@ -241,13 +207,36 @@ int ProcessFile(const uint8_t* data, uint32_t data_size)
 		return 1;
 	}
 
+	OutputBuffer buffers[REG_COUNT];
 	uint32_t num_frames = reg_data_size / REG_COUNT;
 	for (int reg = 0; reg < REG_COUNT; ++reg)
 	{
 		printf("Reg: %d\n", reg);
 		const uint8_t* reg_data = pBaseRegs + reg * num_frames;
-		ScanMatches(reg_data, num_frames, 512u);
+
+		std::vector<Token> matches;
+		MatchGreedy(reg_data, num_frames, 512u, matches);
+		EncodeV1(buffers[reg], matches);
+
+		printf("Packed size: %u\n", buffers[reg].size());
 	}
+
+	FILE* pOutfile = fopen("test.out", "wb");
+	uint32_t offset = 4 * REG_COUNT;
+	for (int reg = 0; reg < REG_COUNT; ++reg)
+	{
+		uint32_t size = offset;
+		uint8_t bigEnd[4];
+		bigEnd[0] = (size >> 24) & 0xff;
+		bigEnd[1] = (size >> 16) & 0xff;
+		bigEnd[2] = (size >> 8) & 0xff;
+		bigEnd[3] = (size >> 0) & 0xff;
+		fwrite(bigEnd, 1, 4, pOutfile);
+		offset += buffers[reg].size();
+	}
+
+	for (int reg = 0; reg < REG_COUNT; ++reg)
+		fwrite(buffers[reg].data(), 1, buffers[reg].size(), pOutfile);
 
 	return 0;
 }

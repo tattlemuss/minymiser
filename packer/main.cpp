@@ -188,7 +188,7 @@ void EncodeV1(OutputBuffer& output, const std::vector<Token>& matches)
 	}
 }
 // ----------------------------------------------------------------------------
-int ProcessFile(const uint8_t* data, uint32_t data_size)
+int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_out)
 {
 	if (data[0] != 'Y' ||
 		data[1] != 'M' ||
@@ -221,7 +221,13 @@ int ProcessFile(const uint8_t* data, uint32_t data_size)
 		printf("Packed size: %u\n", buffers[reg].size());
 	}
 
-	FILE* pOutfile = fopen("test.out", "wb");
+	FILE* pOutfile = fopen(filename_out, "wb");
+	if (!pOutfile)
+	{
+		fprintf(stderr, "ERROR: can't open %s\n", filename_out);
+		return 1;
+	}
+
 	uint32_t offset = 4 * REG_COUNT;
 	for (int reg = 0; reg < REG_COUNT; ++reg)
 	{
@@ -238,17 +244,25 @@ int ProcessFile(const uint8_t* data, uint32_t data_size)
 	for (int reg = 0; reg < REG_COUNT; ++reg)
 		fwrite(buffers[reg].data(), 1, buffers[reg].size(), pOutfile);
 
+	fclose(pOutfile);
 	return 0;
 }
 
 // ----------------------------------------------------------------------------
 int main(int argc, char** argv)
 {
+	if (argc != 3)
+	{
+		fprintf(stderr, "Usage: <infile> <outfile>\n");
+		return 1;
+	}
 	const char* filename_in = argv[1];
+	const char* filename_out = argv[2];
+
 	FILE* pInfile = fopen(filename_in, "rb");
 	if (!pInfile)
 	{
-		printf("Can't read file\n");
+		fprintf(stderr, "Can't read file\n");
 		return 1;
 	}
 
@@ -257,7 +271,7 @@ int main(int argc, char** argv)
 	printf("Read %d bytes\n", readBytes);
 	fclose(pInfile);
 
-	int ret = ProcessFile(pData, readBytes);
+	int ret = ProcessFile(pData, readBytes, filename_out);
 
 	free(pData);
 	return ret;

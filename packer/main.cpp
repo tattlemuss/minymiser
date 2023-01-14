@@ -9,10 +9,7 @@
 #define		REG_COUNT		(14)
 
 // ---------------------------------------------------------------------------
-class OutputBuffer : public std::vector<uint8_t>
-{
-public:
-};
+typedef std::vector<uint8_t>  OutputBuffer;
 
 // ----------------------------------------------------------------------------
 //	LZ STRUCTURES
@@ -56,9 +53,9 @@ struct LazyState
 	// Current size of open literal run
 	uint32_t m_numLiterals = 0;
 
+	// Return the additional cost (in bytes) of adding this match to an output stream
 	uint32_t CalcCost(uint32_t numLiterals, const Match* match) const
 	{
-
 		uint32_t cost = 0;
 		uint32_t tmpLiterals = m_numLiterals;
 		// Literal cost depends on number of literals already accumulated.
@@ -94,6 +91,32 @@ struct LazyState
 			++m_numLiterals;
 		else
 			m_numLiterals = 0;
+	}
+
+	// Write match or literal count
+	static void EncodeCount(OutputBuffer& output, uint32_t count, uint8_t literal_flag)
+	{
+		if (count < 128)
+			output.push_back(count | literal_flag);
+		else
+		{
+			output.push_back(0 | literal_flag);
+			output.push_back(count >> 8);
+			output.push_back(count & 255);
+		}
+	}
+
+	static void EncodeOffset(OutputBuffer& output, uint32_t offset)
+	{
+		assert(offset > 0);
+		if (offset < 256)
+			output.push_back(offset);
+		else
+		{
+			output.push_back(0);
+			output.push_back(offset >> 8);
+			output.push_back(offset & 255);
+		}
 	}
 };
 
@@ -188,64 +211,6 @@ Match FindCheapestMatch(
 		}
 	}
 	return best_pair;
-}
-
-void EncodeCountV1(OutputBuffer& output, uint32_t count, uint8_t literal_flag)
-{
-	if (count < 128)
-		output.push_back(count | literal_flag);
-	else
-	{
-		output.push_back(0 | literal_flag);
-		output.push_back(count >> 8);
-		output.push_back(count & 255);
-	}
-}
-
-void EncodeOffsetV1(OutputBuffer& output, uint32_t offset)
-{
-	assert(offset > 0);
-	if (offset < 256)
-		output.push_back(offset);
-	else
-	{
-		output.push_back(0);
-		output.push_back(offset >> 8);
-		output.push_back(offset & 255);
-	}
-}
-
-// ----------------------------------------------------------------------------
-void EncodeV1(OutputBuffer& output, const std::vector<Match>& matches)
-{
-	size_t index = 0;
-	while (index < matches.size())
-	{
-		// Read all contiguous literals
-		size_t numLits = 0;
-		size_t litIndex = index;
-		while (litIndex < matches.size() && matches[litIndex].IsLiteral())
-			++litIndex;
-
-		size_t litCount = litIndex - index;
-		if (litCount)
-		{
-			// Encode the literal
-			EncodeCountV1(output, litCount, 0x80);
-			for (size_t i = index; i < litIndex; ++i)
-				output.push_back(matches[i].GetLiteral());
-		}
-
-		index = litIndex;
-		if (index < matches.size())
-		{
-			// Match
-			assert(matches[index].IsMatch());
-			EncodeCountV1(output, matches[index].GetLength(), 0x0);
-			EncodeOffsetV1(output, matches[index].GetOffset());
-			index ++;
-		}
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +326,39 @@ void MatchLazy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
 }
 
 // ----------------------------------------------------------------------------
+static void Encode(OutputBuffer& output, const std::vector<Match>& matches)
+{
+	size_t index = 0;
+	while (index < matches.size())
+	{
+		// Read all contiguous literals
+		size_t numLits = 0;
+		size_t litIndex = index;
+		while (litIndex < matches.size() && matches[litIndex].IsLiteral())
+			++litIndex;
+
+		size_t litCount = litIndex - index;
+		if (litCount)
+		{
+			// Encode the literal
+			LazyState::EncodeCount(output, litCount, 0x80);
+			for (size_t i = index; i < litIndex; ++i)
+				output.push_back(matches[i].GetLiteral());
+		}
+
+		index = litIndex;
+		if (index < matches.size())
+		{
+			// Match
+			assert(matches[index].IsMatch());
+			LazyState::EncodeCount(output, matches[index].GetLength(), 0x0);
+			LazyState::EncodeOffset(output, matches[index].GetOffset());
+			index++;
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
 int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_out)
 {
 	const uint32_t search_size = 512U;
@@ -384,7 +382,7 @@ int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_ou
 
 	OutputBuffer buffersG[REG_COUNT];	// Greedy results
 	OutputBuffer buffersL[REG_COUNT];	// Lazy results
-	
+
 	uint32_t num_frames = reg_data_size / REG_COUNT;
 	for (int reg = 0; reg < REG_COUNT; ++reg)
 	{
@@ -393,12 +391,12 @@ int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_ou
 
 		std::vector<Match> matches;
 		MatchGreedy(reg_data, num_frames, search_size, matches);
-		EncodeV1(buffersG[reg], matches);
+		Encode(buffersG[reg], matches);
 		printf("Greedy packed size: %u\n", buffersG[reg].size());
 
 		matches.clear();
 		MatchLazy(reg_data, num_frames, search_size, matches);
-		EncodeV1(buffersL[reg], matches);
+		Encode(buffersL[reg], matches);
 		printf("Lazy packed size: %u\n", buffersL[reg].size());
 	}
 

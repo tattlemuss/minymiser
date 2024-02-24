@@ -258,7 +258,6 @@ cache:		ds.b	cache_size*NUM_REGS
 output_buffer:	ds.b	NUM_REGS
 		even
 
-player_data:
-	;	incbin	motus.all.ymp
-		incbin	sanxion.dat4
+; Our packed data file.
+player_data:	incbin	sanxion.all.ymp
 		even

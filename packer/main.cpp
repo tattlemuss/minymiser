@@ -5,55 +5,80 @@
 #include <assert.h>
 #include <vector>
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 #define		REG_COUNT		(14)
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 typedef std::vector<uint8_t>  OutputBuffer;
 
 // ----------------------------------------------------------------------------
 //	LZ STRUCTURES
 // ----------------------------------------------------------------------------
-// Describes a prior match in the input stream, or a single literal
+// Describes a prior match in the input stream.
 struct Match
 {
-	bool IsMatch() const { return length != 0; }
-	bool IsLiteral() const { return length == 0; }
-	uint32_t EncodedBytesCount() const { return (length == 0) ?  1 : length; }
-
-	void SetLiteral(uint8_t literalPosition)
-	{
-		this->length = 0;
-		this->offset = literalPosition;
-	}
-	
-	void SetMatch(uint32_t length, uint32_t offset)
-	{
-		this->length = length;
-		this->offset = offset;
-	}
-	
-	uint32_t GetLength() const { return length; }
-	uint32_t GetOffset() const { return offset; }
-	uint8_t GetLiteral() const { return offset; }
-private:	
-	uint32_t	length;			// 0 for literal
-	uint32_t	offset;			// Offset to previous match if match, else value of literal in input buffer
+	uint32_t	length = 0;		// 0 for literal
+	uint32_t	offset = 0;		// Offset to previous match if match, else value of literal in input buffer
 };
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Describes a number of literals followed by a match.
+struct Token
+{
+	uint32_t	literal_len = 0;		// Number of literals before the match. Can be 0.
+	Match		match;					// LZ-style match
+};
+
+// ----------------------------------------------------------------------------
+class TokenStream : public std::vector<Token>
+{
+public:
+
+	void AddMatch(const Match& m)
+	{
+		if (size() == 0 ||
+			back().match.length != 0)
+		{
+			push_back(Token());
+			back().literal_len = 0;
+			back().match.length = 0;
+			back().match.offset = 0;
+		}
+		back().match = m;
+	}
+
+	void AddLiterals(uint32_t num_literals)
+	{
+		if (size() == 0 ||
+			back().match.length != 0)
+		{
+			push_back(Token());
+			back().literal_len = 0;
+			back().match.length = 0;
+			back().match.offset = 0;
+		}
+		back().literal_len += num_literals;
+	}
+};
+
+// ----------------------------------------------------------------------------
 // Future accelerator for finding matches
 struct MatchCache
 {
 };
 
-// ---------------------------------------------------------------------------
-struct LazyState
+// ----------------------------------------------------------------------------
+struct EncoderV1
 {
 	// Current size of open literal run
 	uint32_t m_numLiterals = 0;
 
-	// Return the additional cost (in bytes) of adding this match to an output stream
+	void Reset()
+	{
+		m_numLiterals = 0;
+	}
+
+	// Return the additional cost (in bytes) of adding literal(s) and match to an output stream
 	uint32_t CalcCost(uint32_t numLiterals, const Match* match) const
 	{
 		uint32_t cost = 0;
@@ -73,26 +98,55 @@ struct LazyState
 		// A match is always new, so apply full cost
 		if (match)
 		{
-			assert(match->IsMatch());
 			cost = 1;
-			if (match->GetLength() >= 128)
+			if (match->length >= 128)
 				cost++;
 
 			cost += 1;
-			if (match->GetOffset() >= 256)
+			if (match->offset >= 256)
 				cost++;
 		}
 		return cost;
 	}
 
-	void ApplyCost(const Match& match)
+	void ApplyLiterals(uint32_t numLiterals)
 	{
-		if (match.IsLiteral())
-			++m_numLiterals;
-		else
-			m_numLiterals = 0;
+		m_numLiterals += numLiterals;
 	}
 
+	void ApplyMatch(const Match& match)
+	{
+		m_numLiterals = 0;
+	}
+
+	void Encode(OutputBuffer& output, const uint8_t* data, const TokenStream& tokens)
+	{
+		size_t index = 0;
+		while (index < tokens.size())
+		{
+			// Encode literals
+			size_t litCount = tokens[index].literal_len;
+			if (litCount)
+			{
+				// Encode the literal
+				EncodeCount(output, litCount, 0x80);
+				for (uint32_t i = 0; i < litCount; ++i)
+					output.push_back(*data++);
+			}
+
+			// Match
+			const Match& m = tokens[index].match;
+			if (m.length)
+			{
+				EncodeCount(output, m.length, 0x0);
+				EncodeOffset(output, m.offset);
+				// Skip input data so literals stay aligned
+				data += m.length;
+			}
+			index++;
+		}
+	}
+private:
 	// Write match or literal count
 	static void EncodeCount(OutputBuffer& output, uint32_t count, uint8_t literal_flag)
 	{
@@ -122,14 +176,13 @@ struct LazyState
 
 // ---------------------------------------------------------------------------
 Match FindLongestMatch(
-		const uint8_t* pData, uint32_t data_size, MatchCache& cache,
+		const uint8_t* data, uint32_t data_size, MatchCache& cache,
 		uint32_t pos,
 		uint32_t max_dist)
 {
 	// Scan back to find matches
 	uint32_t best_length = 0;
 	Match best_pair;
-	best_pair.SetLiteral(pData[pos]);
 
 	// Scan backwards
 	uint32_t offset = 1;
@@ -143,7 +196,7 @@ Match FindLongestMatch(
 		uint32_t match_length = 0;
 		while (pos + match_length < data_size)
 		{
-			if (pData[back + match_length] != pData[pos + match_length])
+			if (data[back + match_length] != data[pos + match_length])
 				break;
 			++match_length;
 		}
@@ -161,7 +214,8 @@ Match FindLongestMatch(
 			// Always add matches, since big offsets can actually
 			// be encoded to shorter bit patterns than large offsets.
 			//printf("%u match: L: %u off: %u\n", head, match_length, offset);
-			best_pair.SetMatch(match_length, offset);
+			best_pair.length = match_length;
+			best_pair.offset = offset;
 			best_length = match_length;
 		}
 	}
@@ -169,16 +223,15 @@ Match FindLongestMatch(
 }
 
 // ---------------------------------------------------------------------------
+template <class ENCODER>
 Match FindCheapestMatch(
-		const uint8_t* pData, uint32_t data_size, LazyState& state,
+		const uint8_t* data, uint32_t data_size, ENCODER& encoder,
 		uint32_t pos,
 		uint32_t max_dist)
 {
 	// Scan back to find matches
 	float best_ratio = 1.0f;		// enc bytes vs cost
-
 	Match best_pair;
-	best_pair.SetLiteral(pData[pos]);
 
 	// Scan backwards
 	uint32_t offset = 1;
@@ -192,7 +245,7 @@ Match FindCheapestMatch(
 		uint32_t match_length = 0;
 		while (pos + match_length < data_size)
 		{
-			if (pData[back + match_length] != pData[pos + match_length])
+			if (data[back + match_length] != data[pos + match_length])
 				break;
 			++match_length;
 		}
@@ -201,11 +254,12 @@ Match FindCheapestMatch(
 		if (match_length >= 3)
 		{
 			Match pair;
-			pair.SetMatch(match_length, offset);
-			float ratio = ((float) state.CalcCost(0, &pair)) / match_length;
+			pair.length = match_length;
+			pair.offset = offset;
+			float ratio = ((float) encoder.CalcCost(0, &pair)) / match_length;
 			if (ratio < best_ratio)
 			{
-				best_pair.SetMatch(match_length, offset);
+				best_pair = pair;
 				best_ratio = ratio;
 			}
 		}
@@ -214,10 +268,9 @@ Match FindCheapestMatch(
 }
 
 // ---------------------------------------------------------------------------
-void MatchGreedy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
-	std::vector<Match>& matches)
+void MatchGreedy(TokenStream& tokens, const uint8_t* data, uint32_t data_size, uint32_t max_dist)
 {
-	matches.clear();
+	tokens.clear();
 	MatchCache cache;
 
 	uint32_t match_bytes = 0;
@@ -226,31 +279,31 @@ void MatchGreedy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
 
 	while (head < data_size)
 	{
-		Match best = FindLongestMatch(pData, data_size, cache,
+		Match best = FindLongestMatch(data, data_size, cache,
 				head, max_dist);
 
-		if (best.IsMatch())
+		if (best.length)
 		{
-			//printf("Match Length %u Dist %u\n", best.GetLength(), best.GetOffset());
-			match_bytes += best.GetLength();
+			tokens.AddMatch(best);
+			match_bytes += best.length;
+			head += best.length;
 		}
 		else
 		{
-			//printf("Literal\n");
+			tokens.AddLiterals(1);
 			literal_bytes++;
+			head++;
 		}
-		matches.push_back(best);
-		head += best.EncodedBytesCount();
 	}
 
 	printf("Match size..%u, Literal size..%u\n", match_bytes, literal_bytes);
 }
 
 // ---------------------------------------------------------------------------
-void MatchLazy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
-	std::vector<Match>& matches)
+template <class ENCODER>
+void MatchLazy(TokenStream& tokens, const uint8_t* data, uint32_t data_size, uint32_t max_dist, ENCODER& encoder)
 {
-	matches.clear();
+	tokens.clear();
 	MatchCache cache;
 
 	uint32_t used_match = 0;
@@ -258,12 +311,12 @@ void MatchLazy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
 	uint32_t used_second = 0;
 	
 	uint32_t head = 0;
+	encoder.Reset();
 
-	LazyState state;
 	while (head < data_size)
 	{
-		Match best0 = FindLongestMatch(pData, data_size, cache, head, max_dist);
-		bool choose_lit = best0.IsLiteral();
+		Match best0 = FindLongestMatch(data, data_size, cache, head, max_dist);
+		bool choose_lit = best0.length == 0;
 
 		// We have 2 choices really
 		// Apply 0 (as a match or a literal)
@@ -271,8 +324,8 @@ void MatchLazy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
 		if (!choose_lit)
 		{
 			// See if doing N literals is smaller
-			uint32_t cost0 = state.CalcCost(0, &best0);
-			uint32_t cost_lit = state.CalcCost(best0.EncodedBytesCount(), nullptr);
+			uint32_t cost0 = encoder.CalcCost(0, &best0);
+			uint32_t cost_lit = encoder.CalcCost(best0.length, nullptr);
 			if (cost_lit < cost0)
 			{
 				choose_lit = true;
@@ -283,16 +336,18 @@ void MatchLazy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
 		if (!choose_lit)
 		{
 			used_match++;
-			if (best0.IsMatch() && head + 1 < data_size)
+			// We only need to decide to choose the second match, if both
+			// 0 and 1 are matches rather than literals.
+			if (best0.length && head + 1 < data_size)
 			{
 				Match best1;
-				best1 = FindLongestMatch(pData, data_size, cache, head + 1, max_dist);
-				if (best1.IsMatch())
+				best1 = FindLongestMatch(data, data_size, cache, head + 1, max_dist);
+				if (best1.length)
 				{
-					uint32_t cost0 = state.CalcCost(0, &best0);
-					uint32_t cost1 = state.CalcCost(1, &best1);
-					float rate0 = ((float)cost0) / best0.EncodedBytesCount();
-					float rate1 = ((float)cost1) / (1 + best1.EncodedBytesCount());
+					uint32_t cost0 = encoder.CalcCost(0, &best0);
+					uint32_t cost1 = encoder.CalcCost(1, &best1);
+					float rate0 = ((float)cost0) / best0.length;
+					float rate1 = ((float)cost1) / (1 + best1.length);
 					if (rate1 < rate0)
 					{
 						choose_lit = true;
@@ -303,22 +358,20 @@ void MatchLazy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
 			}
 		}
 
-		// Add N literals, plus the match
+		// Add the decision to the token stream,
+		// and update the encoder's state so it can update future encoding costs.
 		if (choose_lit)
 		{
-			Match lit;
-			lit.SetLiteral(pData[head]);
-			
-			matches.push_back(lit);
-			state.ApplyCost(lit);
+			tokens.AddLiterals(1);
+			encoder.ApplyLiterals(1);
 			++head;
 		}
 		else
 		{
 			used_match++;
-			matches.push_back(best0);
-			state.ApplyCost(best0);
-			head += best0.EncodedBytesCount();
+			tokens.AddMatch(best0);
+			encoder.ApplyMatch(best0);
+			head += best0.length;
 		}
 	}
 	printf("Used match: %u, used matchlit: %u, used second %u\n",
@@ -326,38 +379,40 @@ void MatchLazy(const uint8_t* pData, uint32_t data_size, uint32_t max_dist,
 }
 
 // ----------------------------------------------------------------------------
-static void Encode(OutputBuffer& output, const std::vector<Match>& matches)
+struct PackedFile
 {
-	size_t index = 0;
-	while (index < matches.size())
+	OutputBuffer buffers[REG_COUNT];	// Packed data for each YM reg
+};
+
+// ----------------------------------------------------------------------------
+int WriteFile(const char* filename_out, const PackedFile& file)
+{
+	FILE* pOutfile = fopen(filename_out, "wb");
+	if (!pOutfile)
 	{
-		// Read all contiguous literals
-		size_t numLits = 0;
-		size_t litIndex = index;
-		while (litIndex < matches.size() && matches[litIndex].IsLiteral())
-			++litIndex;
-
-		size_t litCount = litIndex - index;
-		if (litCount)
-		{
-			// Encode the literal
-			LazyState::EncodeCount(output, litCount, 0x80);
-			for (size_t i = index; i < litIndex; ++i)
-				output.push_back(matches[i].GetLiteral());
-		}
-
-		index = litIndex;
-		if (index < matches.size())
-		{
-			// Match
-			assert(matches[index].IsMatch());
-			LazyState::EncodeCount(output, matches[index].GetLength(), 0x0);
-			LazyState::EncodeOffset(output, matches[index].GetOffset());
-			index++;
-		}
+		fprintf(stderr, "ERROR: can't open %s\n", filename_out);
+		return 1;
 	}
-}
 
+	uint32_t offset = 4 * REG_COUNT;
+	for (int reg = 0; reg < REG_COUNT; ++reg)
+	{
+		uint32_t size = offset;
+		uint8_t bigEnd[4];
+		bigEnd[0] = (size >> 24) & 0xff;
+		bigEnd[1] = (size >> 16) & 0xff;
+		bigEnd[2] = (size >> 8) & 0xff;
+		bigEnd[3] = (size >> 0) & 0xff;
+		fwrite(bigEnd, 1, 4, pOutfile);
+		offset += file.buffers[reg].size();
+	}
+
+	for (int reg = 0; reg < REG_COUNT; ++reg)
+		fwrite(file.buffers[reg].data(), 1, file.buffers[reg].size(), pOutfile);
+
+	fclose(pOutfile);
+	return 0;
+}
 // ----------------------------------------------------------------------------
 int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_out)
 {
@@ -380,51 +435,28 @@ int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_ou
 		return 1;
 	}
 
-	OutputBuffer buffersG[REG_COUNT];	// Greedy results
-	OutputBuffer buffersL[REG_COUNT];	// Lazy results
-
+	PackedFile packedG;
+	PackedFile packedL;
 	uint32_t num_frames = reg_data_size / REG_COUNT;
 	for (int reg = 0; reg < REG_COUNT; ++reg)
 	{
 		printf("Reg: %d\n", reg);
 		const uint8_t* reg_data = pBaseRegs + reg * num_frames;
 
-		std::vector<Match> matches;
-		MatchGreedy(reg_data, num_frames, search_size, matches);
-		Encode(buffersG[reg], matches);
-		printf("Greedy packed size: %u\n", buffersG[reg].size());
-
-		matches.clear();
-		MatchLazy(reg_data, num_frames, search_size, matches);
-		Encode(buffersL[reg], matches);
-		printf("Lazy packed size: %u\n", buffersL[reg].size());
+		EncoderV1 encoder;
+		TokenStream tokens;
+		/*
+		MatchGreedy(tokens, reg_data, num_frames, search_size);
+		encoder.Encode(packedG.buffers[reg], reg_data, tokens);
+		printf("Greedy packed size: %u\n", packedG.buffers[reg].size());
+		*/
+		tokens.clear();
+		MatchLazy(tokens, reg_data, num_frames, search_size, encoder);
+		encoder.Encode(packedL.buffers[reg], reg_data, tokens);
+		printf("Lazy packed size: %u\n", packedL.buffers[reg].size());
 	}
 
-	FILE* pOutfile = fopen(filename_out, "wb");
-	if (!pOutfile)
-	{
-		fprintf(stderr, "ERROR: can't open %s\n", filename_out);
-		return 1;
-	}
-
-	uint32_t offset = 4 * REG_COUNT;
-	for (int reg = 0; reg < REG_COUNT; ++reg)
-	{
-		uint32_t size = offset;
-		uint8_t bigEnd[4];
-		bigEnd[0] = (size >> 24) & 0xff;
-		bigEnd[1] = (size >> 16) & 0xff;
-		bigEnd[2] = (size >> 8) & 0xff;
-		bigEnd[3] = (size >> 0) & 0xff;
-		fwrite(bigEnd, 1, 4, pOutfile);
-		offset += buffersL[reg].size();
-	}
-
-	for (int reg = 0; reg < REG_COUNT; ++reg)
-		fwrite(buffersL[reg].data(), 1, buffersL[reg].size(), pOutfile);
-
-	fclose(pOutfile);
-	return 0;
+	return WriteFile(filename_out, packedL);
 }
 
 // ----------------------------------------------------------------------------
@@ -451,12 +483,12 @@ int main(int argc, char** argv)
 
 	printf("File size %ld bytes\n", data_size);
 
-	uint8_t* pData = (uint8_t*) malloc(data_size);
-	int readBytes = fread(pData, 1, data_size, pInfile);
+	uint8_t* data = (uint8_t*) malloc(data_size);
+	int readBytes = fread(data, 1, data_size, pInfile);
 	fclose(pInfile);
 
-	int ret = ProcessFile(pData, readBytes, filename_out);
+	int ret = ProcessFile(data, readBytes, filename_out);
 
-	free(pData);
+	free(data);
 	return ret;
 }

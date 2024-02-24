@@ -569,8 +569,10 @@ def read_delta(fname, outfname, settings):
 				packed.append(raw[r][i])
 
 	print("Delta size: {} -> {}".format(len(all_data), len(packed)))
+	outstrm  = open(outfname, "wb")
+	outstrm.write(packed)
+	outstrm.close()
 
-#read_ym(open("led1.ym", "rb"), open("led1.ymp", "wb"))	 WRONG FORMAT
 settings = Settings()
 settings.search_dist = 512
 pack_formats = (PackFormat1(), PackFormat2())
@@ -579,7 +581,7 @@ for format in range(0, 2):
 		pack_format = pack_formats[format]
 		fmtname = ['ymp', 'ymp2'][format]
 
-		for fname in ['sanxion', 'motus', 'led2']:
+		for fname in ['test_data/sanxion', 'test_data/motus', 'test_data/led2']:
 			in_name = fname + ".ym"
 			outname = "{}.{}.{}".format(fname, grouping, fmtname)
 			if grouping == 'all':
@@ -589,7 +591,6 @@ for format in range(0, 2):
 			else:
 				read_single(in_name, outname, pack_format, settings)
 
-#read_ym("motus.ym", "test.ymp", PackFormat2(), settings)
-read_delta("motus.ym", "test.ymp", settings)
-read_delta("led2.ym", "test.ymp", settings)
-read_delta("sanxion.ym", "test.ymp", settings)
+read_delta("test_data/motus.ym", "test_data/motus.delta", settings)
+read_delta("test_data/led2.ym", "test_data/led2.delta", settings)
+read_delta("test_data/sanxion.ym", "test_data/sanxion.delta", settings)

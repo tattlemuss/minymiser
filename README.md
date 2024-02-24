@@ -3,11 +3,22 @@ MinYMiser
 
 Some experiments in compressing YM-2149 register data streams and depacking at runtime.
 
+The idea is to create a generalised music player with low runtime overhead (CPU and memory),
+in a tradeoff between normal music drivers (which tend to have higher CPU time) and "YM dump"
+methods (which tend to require large memory footprints)
+
 The core approach is to use [LZSA](https://github.com/emmanuel-marty/lzsa) to compress the stream
-of YM registers.
+of YM registers, using a small rolling window of previous frames. This means that the memory 
+footprint is limited to the packed file plus a small temporary buffer, rather than storing a larger
+YM dump in memory.
 
 C++ code for a compressor is in the "/packer" directory. It should produce .ymp compressed files.
-The code is a single file and is quite naive, but is essentially a working lzsa compressor.
+The code is a single file and is quite naive, but is essentially a working lzsa compressor. The
+command line is
+
+  packer input.ym3 output.ymp
+
+... where the input is a YM3-format file, as produced by Hatari amongst others.
 
 "player.s" is example code for playback on a standard Atari ST. It should play back the compressed
 streams in around 3-4 scanlines on an 8MHz machine.
@@ -43,6 +54,10 @@ incorrect and some voices are garbled.
 
 Omissions
 =========
+Only .ym3 input data format is supported.
 
 Currently the player doesn't support looping the data stream.
+
+The system doesn't support timer effects like SID. It might be possible to support these with
+extensions to the system.
 

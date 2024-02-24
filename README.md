@@ -7,8 +7,8 @@ The idea is to create a generalised music player with low runtime overhead (CPU 
 in a tradeoff between normal music drivers (which tend to have higher CPU time) and "YM dump"
 methods (which tend to require large memory footprints)
 
-The core approach is to use [LZSA](https://github.com/emmanuel-marty/lzsa) to compress the stream
-of YM registers, using a small rolling window of previous frames. This means that the memory 
+The core approach is to use [LZSA](https://github.com/emmanuel-marty/lzsa)-like methods to compress 
+the stream of YM registers, using a small rolling window of previous frames. This means that the memory 
 footprint is limited to the packed file plus a small temporary buffer, rather than storing a larger
 YM dump in memory.
 
@@ -29,12 +29,12 @@ to look back into and store matches. The player decompresses these in real time.
 
 The "/python" directory contains my prototyping area. It tries to compress the files in various ways:
 
-- using LZSA1 vs LZSA2 format
+- using "simple" LZ vs LZSA2 format (.ymp vs .ymp2 output)
 - compressing the streams individually, all as a large single group, or as selective groups
   of registers (e.g. storing registers 0 and 1, the square-wave period of channel A, together)
 - using simple delta-packing with a bitmask to reduce size (the "traditional" way to pack)
 
-The C++ packer and runtime only currently support the LZSA1 format, and register streams packed
+The C++ packer and runtime only currently support the "simple" LZ format, and register streams packed
 individually. (It would be good to support LZSA2.) This matches the ".all.ymp" files produced
 by the Python packer.
 

@@ -62,11 +62,11 @@ class PackFormat1:
 		count = int(count / multiple)
 		offset = int(offset / multiple)
 
-		cost = 2
+		cost = 2            # 1 for each of count + offset
 		if count >= 256:
 			cost += 1
 		if offset >= 256:
-			cost += 1
+			cost += 2       # 2 extra bytes
 		return cost
 
 	def create_bytestream(self, packed, multiple):

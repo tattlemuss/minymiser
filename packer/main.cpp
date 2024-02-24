@@ -104,7 +104,7 @@ struct EncoderV1
 
 			cost += 1;
 			if (match->offset >= 256)
-				cost++;
+				cost += 2;
 		}
 		return cost;
 	}

@@ -413,6 +413,82 @@ int WriteFile(const char* filename_out, const PackedFile& file)
 	fclose(pOutfile);
 	return 0;
 }
+
+void PackSingle(const uint8_t* data, uint32_t data_size, uint32_t search_size, OutputBuffer& buffer)
+{
+	TokenStream tokens;
+	const uint8_t* reg_data = data;
+	EncoderV1 encoder;
+	MatchLazy(tokens, reg_data, data_size, search_size, encoder);
+	encoder.Encode(buffer, reg_data, tokens);
+}
+
+void RunTest(const uint8_t* data, uint32_t data_size)
+{
+	uint32_t curr_search_sizes[REG_COUNT];
+	uint32_t next_search_sizes[REG_COUNT];
+	uint32_t curr_packed_sizes[REG_COUNT];
+	uint32_t next_packed_sizes[REG_COUNT];
+
+	const int32_t step = 32;
+
+	// Calculate initial sizes
+	for (int reg = 0; reg < REG_COUNT; ++reg)
+	{
+		OutputBuffer buf;
+		curr_search_sizes[reg] = 1024;
+		PackSingle(data + reg * data_size, data_size, curr_search_sizes[reg], buf);
+		curr_packed_sizes[reg] = buf.size();
+
+		buf.clear();
+		next_search_sizes[reg] = 1024 - step;
+		PackSingle(data + reg * data_size, data_size, next_search_sizes[reg], buf);
+		next_packed_sizes[reg] = buf.size();
+	}
+
+	while (1)
+	{
+
+		uint32_t total = 0;
+		uint32_t totalPackedSize = 0;
+		for (int reg = 0; reg < REG_COUNT; ++reg)
+			totalPackedSize += curr_packed_sizes[reg];
+		printf("Current packed size: %d\n", totalPackedSize);
+
+		for (int reg = 0; reg < REG_COUNT; ++reg)
+			total += curr_search_sizes[reg];
+
+		if (total < 512 * 14)
+			break;
+
+		int32_t least = 999999;
+		int32_t leastIndex;
+		for (int reg = 0; reg < REG_COUNT; ++reg)
+		{
+			int32_t cost = next_packed_sizes[reg] - curr_packed_sizes[reg];
+			printf("Cost for %d would be %d (%d -> %d), window size: %d\n", reg, cost, curr_packed_sizes[reg], next_packed_sizes[reg], next_search_sizes[reg]);
+			if (cost < least)
+			{
+				least = cost;
+				leastIndex = reg;
+			}
+		}
+
+		printf("Choosing %d\n", leastIndex);
+
+		{
+			OutputBuffer buf;
+			curr_search_sizes[leastIndex] = next_search_sizes[leastIndex];
+			curr_packed_sizes[leastIndex] = next_packed_sizes[leastIndex];
+			next_search_sizes[leastIndex] -= step;
+			PackSingle(data + leastIndex * data_size, data_size, next_search_sizes[leastIndex], buf);
+			next_packed_sizes[leastIndex] = buf.size();	
+		}
+	}
+
+}
+
+
 // ----------------------------------------------------------------------------
 int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_out)
 {
@@ -435,9 +511,11 @@ int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_ou
 		return 1;
 	}
 
+	uint32_t num_frames = reg_data_size / REG_COUNT;
+	RunTest(pBaseRegs, num_frames);
+
 	PackedFile packedG;
 	PackedFile packedL;
-	uint32_t num_frames = reg_data_size / REG_COUNT;
 	for (int reg = 0; reg < REG_COUNT; ++reg)
 	{
 		printf("Reg: %d\n", reg);

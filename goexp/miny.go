@@ -54,16 +54,15 @@ type packedstream struct {
 }
 
 type encoder interface {
-	// Encodes all the tokens into a binary stream.
-	encode(tokens []token, input []byte) []byte
 	// Calculate the cost for adding literals or matches
 	cost(lit_count int, m match) int
 	// Calculate the cost of just a match
-	match_cost(m match) int
-	// Apply N literals
 	lit(lit_count int)
 	// Apply a match
 	match(m match)
+
+	// Encodes all the given tokens into a binary stream.
+	encode(tokens []token, input []byte) []byte
 }
 
 type encoder_v1 struct {
@@ -81,16 +80,22 @@ func encode_count(output []byte, count int, literal_flag byte) []byte {
 }
 
 func encode_offset(output []byte, offset int) []byte {
+	//for offset >= 256 {
+	//	output = append(output, byte(0))
+	//	offset -= 256
+	//}
+	//output = enc_byte(output, byte(offset))
 	if offset < 256 {
 		output = append(output, byte(offset))
 	} else {
-		output = append(output, byte(0))
+		output = append(output, 0)
 		output = enc_word(output, uint16(offset))
 	}
+
 	return output
 }
 
-func (e encoder_v1) encode(tokens []token, input []byte) []byte {
+func (e *encoder_v1) encode(tokens []token, input []byte) []byte {
 	output := make([]byte, 0)
 	for i := 0; i < len(tokens); i += 1 {
 		var t token = tokens[i]
@@ -109,7 +114,7 @@ func (e encoder_v1) encode(tokens []token, input []byte) []byte {
 }
 
 // Return the additional cost (in bytes) of adding literal(s) and match to an output stream
-func (e encoder_v1) cost(lit_count int, m match) int {
+func (e *encoder_v1) cost(lit_count int, m match) int {
 	cost := 0
 	tmp_literals := e.num_literals
 	cost += lit_count
@@ -129,7 +134,8 @@ func (e encoder_v1) cost(lit_count int, m match) int {
 	return cost
 }
 
-func (e encoder_v1) match_cost(m match) int {
+// Calculate the byte cost of only a match
+func (e *encoder_v1) match_cost(m match) int {
 	cost := 0
 	// Match
 	// A match is always new, so apply full cost
@@ -148,11 +154,11 @@ func (e encoder_v1) match_cost(m match) int {
 	return cost
 }
 
-func (e encoder_v1) lit(lit_count int) {
+func (e *encoder_v1) lit(lit_count int) {
 	e.num_literals += lit_count
 }
 
-func (e encoder_v1) match(m match) {
+func (e *encoder_v1) match(m match) {
 	e.num_literals = 0
 }
 
@@ -170,7 +176,7 @@ func find_longest_match(data []byte, head int, distance int) match {
 		for head+length < len(data) && data[check_pos+length] == data[head+length] {
 			length += 1
 		}
-		if length >= 2 && length > best_length {
+		if length >= 3 && length > best_length {
 			best_length = length
 			best_offset = offset
 		}
@@ -194,7 +200,7 @@ func find_cheapest_match(enc encoder, data []byte, head int, distance int) match
 		}
 		if length >= 3 {
 			m := match{len: length, off: offset}
-			mc := float64(enc.match_cost(m)) / float64(length)
+			mc := float64(enc.cost(0, m)) / float64(length)
 			if mc < best_cost {
 				best_cost = mc
 				best_match = m
@@ -213,8 +219,8 @@ func pack_register_greedy(enc encoder, data []byte) []byte {
 	match_bytes := 0
 
 	for head < len(data) {
-		best := find_cheapest_match(enc, data, head, buffer_size)
-		//match := find_longest_match(data, head, buffer_size)
+		//best := find_cheapest_match(enc, data, head, buffer_size)
+		best := find_longest_match(data, head, buffer_size)
 		if best.len != 0 {
 			head += best.len
 			tokens = append(tokens, token{true, best.len, best.off})
@@ -232,8 +238,8 @@ func pack_register_greedy(enc encoder, data []byte) []byte {
 			lit_count += 1
 		}
 	}
-	fmt.Printf("Matches %v Literals %v (%f%%)\n", match_count, lit_count,
-		float32(match_count)*100.0/(lit_count+match_count))
+	fmt.Printf("Matches %v Literals %v (%v%%)\n", match_count, lit_count,
+		match_count*100/(lit_count+match_count))
 
 	return enc.encode(tokens, data)
 }
@@ -247,8 +253,8 @@ func pack_register_lazy(enc encoder, data []byte) []byte {
 	head := 0
 
 	for head < len(data) {
-		//best0 := find_longest_match(data, head, buffer_size)
-		best0 := find_cheapest_match(enc, data, head, buffer_size)
+		best0 := find_longest_match(data, head, buffer_size)
+		//best0 := find_cheapest_match(enc, data, head, buffer_size)
 		choose_lit := best0.len == 0
 
 		// We have 2 choices really
@@ -269,8 +275,8 @@ func pack_register_lazy(enc encoder, data []byte) []byte {
 			// We only need to decide to choose the second match, if both
 			// 0 and 1 are matches rather than literals.
 			if best0.len != 0 && head+1 < len(data) {
-				//best1 := find_longest_match(data, head+1, buffer_size)
-				best1 := find_cheapest_match(enc, data, head+1, buffer_size)
+				best1 := find_longest_match(data, head+1, buffer_size)
+				//best1 := find_cheapest_match(enc, data, head+1, buffer_size)
 				if best1.len != 0 {
 					cost0 := enc.cost(0, best0)
 					cost1 := enc.cost(1, best1)
@@ -305,8 +311,8 @@ func pack_register_lazy(enc encoder, data []byte) []byte {
 			enc.match(best0)
 		}
 	}
-	//fmt.Println("Used match:", used_match, "used matchlit:", used_matchlit,
-	//	"used second", used_second)
+	fmt.Println("Used match:", used_match, "used matchlit:", used_matchlit,
+		"used second", used_second)
 
 	return enc.encode(tokens, data)
 }
@@ -334,8 +340,8 @@ func pack(data []byte) ([]byte, error) {
 			reg_data[i] = data[src_i]
 		}
 		enc := encoder_v1{0}
-		greedy := pack_register_greedy(enc, reg_data)
-		all_data[reg].data = pack_register_lazy(enc, reg_data)
+		greedy := pack_register_greedy(&enc, reg_data)
+		all_data[reg].data = pack_register_lazy(&enc, reg_data)
 		fmt.Println("reg", reg, "Packed length", len(all_data[reg].data), "Greedy", len(greedy))
 	}
 

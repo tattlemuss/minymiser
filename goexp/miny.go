@@ -357,7 +357,10 @@ func pack(data []byte) ([]byte, error) {
 	output_data := make([]byte, 0)
 
 	// First the header with the offsets...
-	var offset int = 4 * num_regs
+	var offset int = 4*num_regs + 2
+
+	// Output size in VBLs first
+	output_data = enc_word(output_data, uint16(data_size_per_reg))
 	for reg := 0; reg < num_regs; reg += 1 {
 		output_data = enc_long(output_data, uint32(offset))
 		offset += len(all_data[reg].data)

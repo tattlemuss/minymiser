@@ -385,7 +385,7 @@ struct PackedFile
 };
 
 // ----------------------------------------------------------------------------
-int WriteFile(const char* filename_out, const PackedFile& file)
+int WriteFile(const char* filename_out, const PackedFile& file, uint16_t num_vbls)
 {
 	FILE* pOutfile = fopen(filename_out, "wb");
 	if (!pOutfile)
@@ -394,7 +394,12 @@ int WriteFile(const char* filename_out, const PackedFile& file)
 		return 1;
 	}
 
-	uint32_t offset = 4 * REG_COUNT;
+	uint8_t vblCount[2];
+	vblCount[0] = (num_vbls >> 8) & 0xff;
+	vblCount[1] = (num_vbls >> 0) & 0xff;
+	fwrite(vblCount, 1, 2, pOutfile);
+
+	uint32_t offset = 4 * REG_COUNT + 2;
 	for (int reg = 0; reg < REG_COUNT; ++reg)
 	{
 		uint32_t size = offset;
@@ -456,7 +461,7 @@ int ProcessFile(const uint8_t* data, uint32_t data_size, const char* filename_ou
 		printf("Lazy packed size: %u\n", packedL.buffers[reg].size());
 	}
 
-	return WriteFile(filename_out, packedL);
+	return WriteFile(filename_out, packedL, num_frames);
 }
 
 // ----------------------------------------------------------------------------

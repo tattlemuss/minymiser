@@ -468,7 +468,9 @@ def read_ym(fname, outfname, pack_format, settings):
 	# Output offsets
 	outstrm  = open(outfname, "wb")
 	import struct
-	offset = 14*4
+	offset = 14*4 + 2
+	outstrm.write(struct.pack(">H", num_vbls))
+ 
 	for r in range(0, 14):
 		outstrm.write(struct.pack(">I", offset))
 		offset += len(packed[r])
@@ -513,7 +515,8 @@ def read_ym2(fname, outfname, pack_format, settings):
 	outstrm  = open(outfname, "wb")
 	import struct
 	stream_count = len(packeds)
-	offset = stream_count*4
+	offset = stream_count*4+2
+	outstrm.write(struct.pack(">H", num_vbls)) 
 	for r in range(0, stream_count):
 		outstrm.write(struct.pack(">I", offset))
 		offset += len(packeds[r])

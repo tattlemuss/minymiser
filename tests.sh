@@ -1,4 +1,8 @@
 #!/usr/bin/env sh
+# This script runs all 3 versions of the compressor on each .ym file
+# in the test_data directory.
+# The output files are named such that it should be easy to compare the
+# output filesize.
 
 mkdir test_output
 rm -f test_output/*.ymp

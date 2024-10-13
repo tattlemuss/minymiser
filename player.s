@@ -40,12 +40,12 @@ main:
 
 modplay_loop:
 
-.waitstart:	
+.waitstart:
 	;cmp.b 	#$2,$fffffc02.w
 	;bne.s	.waitstart
 
 	lea	player_data,a0
-	bsr	player_init
+	bsr	ymp_player_init
 
 	; Install timer C as test
 	or.w	#$0700,sr			;disable interrupts
@@ -71,9 +71,7 @@ c_routine
 	bpl.s	.skip
 	add.w	#200,tccount
 	movem.l	d0-a6,-(a7)
-	lea	player_state(pc),a0
-	lea	output_buffer,a6
-	bsr	player_update
+	bsr	ymp_player_update
 	move.w	#$777,$ffff8240.w
 	movem.l	(a7)+,d0-a6
 .skip:	move.l	old_c,-(sp)
@@ -87,7 +85,7 @@ old_c:			ds.l	1
 ;	CORE PLAYER CODE
 ; -----------------------------------------------------------------------
 NUM_REGS		equ	14
-cache_size		equ	512			; number of saved bytes per register
+YMP_CACHE_SIZE		equ	512			; number of saved bytes per register
 
 							; KEEP THESE 3 IN ORDER
 ymunp_match_read_ptr	equ	0			; X when copying, the src pointer (either in cache or in original stream)
@@ -97,15 +95,19 @@ ymunp_size		equ	10			; structure size
 
 ; -----------------------------------------------------------------------
 ; a0 = start of packed ym data
-player_init:
+ymp_player_init:
+	move.l	a0,ymp_tune_ptr
+ymp_player_restart:
 	; "globals" first
-	lea	cache(pc),a2
-	move.l	a2,cache_write_ptr
-	move.w	#cache_size,tmp
+	lea	ymp_cache(pc),a2
+	move.l	a2,ymp_cache_write_ptr
+	move.w	#YMP_CACHE_SIZE,ymp_cache_countdown
 
-	lea	player_state(pc),a1
+	lea	ymp_streams_state(pc),a1
 	; a1 = state data
 	move.l	a0,a3
+	move.w	(a0)+,ymp_vbl_countdown
+
 	; a3 = copy of packed file start
 	moveq.l	#NUM_REGS-1,d0
 .fill:
@@ -121,19 +123,19 @@ player_init:
 
 ; -----------------------------------------------------------------------
 ; a0 = input structure
-player_update:
+ymp_player_update:
 	move.w	#$700,$ffff8240.w
-	lea	player_state,a0				; a0 = streams state
-	lea	output_buffer,a6			; a6 = YM buffer
-	move.l	cache_write_ptr(pc),a2			; a2 = cache write ptr
-	lea	cache+cache_size(pc),a3			; a3 = cache end ptr (constant!)
+	lea	ymp_streams_state(pc),a0		; a0 = streams state
+	lea	ymp_output_buffer(pc),a6		; a6 = YM buffer
+	move.l	ymp_cache_write_ptr(pc),a2		; a2 = cache write ptr
+	lea	ymp_cache+YMP_CACHE_SIZE(pc),a3		; a3 = cache end ptr (constant!)
 	moveq	#NUM_REGS-1,d1				; d1 = loop counter
 	move.w	#ymunp_size,d2				; d2 = stream structure size
-	move.w	#cache_size,d3				; d3 = cache size
-stream_update:
+	move.w	#YMP_CACHE_SIZE,d3			; d3 = cache size
+ymp_stream_update:
 	; a0	= ymunp struct
 	subq.w	#1,ymunp_copy_count_w(a0)
-	bne.s	stream_copy_one				; still in copying state
+	bne.s	.stream_copy_one			; still in copying state
 
 	; Set up next ymunp_match_read_ptr and ymunp_copy_count_w here
 	move.l	ymunp_stream_read_ptr(a0),a1		; a1 = packed data stream
@@ -141,7 +143,7 @@ stream_update:
 	move.b	(a1)+,d0
 	; Match or reference?
 	bclr	#7,d0
-	bne.s	literals
+	bne.s	.literals
 
 	; Match code
 	; a1 is the stream read ptr
@@ -165,8 +167,8 @@ stream_update:
 	sub.w	d3,a1					; subtract cache size again
 .ptr_ok:
 	move.l	a1,ymunp_match_read_ptr(a0)
-	bra.s	stream_copy_one
-literals:
+	bra.s	.stream_copy_one
+.literals:
 	; Literals code -- just a count
 	; a1 is the stream read ptr
 	; d0 is the pre-read count value
@@ -177,7 +179,7 @@ literals:
 	move.l	a1,ymunp_stream_read_ptr(a0)
 	; Falls through to do the copy
 
-stream_copy_one:
+.stream_copy_one:
 	; Copy byte from either the cache or the literals in the stream
 	move.l	ymunp_match_read_ptr(a0),a1		; a1 = match read
 	; a2 = cache write, a3 = loop addr
@@ -188,19 +190,19 @@ stream_copy_one:
 	; The write pointer check is done in one single go since all sizes are the same
 	; This check is done even if literals are copied, it just won't ever pass the check
 	cmp.l	a3,a1					; has match read ptr hit end of cache?
-	bne.s	noloop_cache_read
+	bne.s	.noloop_cache_read
 	sub.w	d3,a1					; move back in cache
-noloop_cache_read:
+.noloop_cache_read:
 	move.l	a1,ymunp_match_read_ptr(a0)
 
 	; d0 is "output" here
 	move.b	d0,(a6)+				; write to output buffer
 
 	; Move on to the next register
-	add.w	d3,a2					; next cache_write_ptr
+	add.w	d3,a2					; next ymp_cache_write_ptr
 	add.w	d3,a3					; next cache_end ptr
 	add.w	d2,a0					; next stream structure
-	dbf	d1,stream_update
+	dbf	d1,ymp_stream_update
 	bra.s	ym_write
 
 ; If the previous byte read was 0, read 2 bytes to generate a 16-bit value
@@ -217,7 +219,7 @@ ym_write:
 	move.w	#$007,$ffff8240.w
 
 	; We could write these in reverse order and reuse a6?
-	lea	output_buffer(pc),a6
+	lea	ymp_output_buffer(pc),a6
 	lea	$ffff8800.w,a0
 	lea	$ffff8802.w,a1
 
@@ -238,26 +240,35 @@ r	set	r+1
 	endr
 
 	; Update the "write to cache" variables
-	addq.l	#1,cache_write_ptr
-	subq.w	#1,tmp
+	addq.l	#1,ymp_cache_write_ptr
+	subq.w	#1,ymp_cache_countdown
 	bne.s	.no_cache_loop
-	move.w	#cache_size,tmp
+	move.w	#YMP_CACHE_SIZE,ymp_cache_countdown
 	; Roll base cache_write pointers
-	sub.l	#cache_size,cache_write_ptr
+	sub.l	#YMP_CACHE_SIZE,ymp_cache_write_ptr
 .no_cache_loop:
+	; Check for tune restart
+	subq.w	#1,ymp_vbl_countdown
+	bne.s	.no_tune_restart
+	move.l	ymp_tune_ptr(pc),a0
+	; This should rewrite the countdown value and
+	; all internal variables
+	bsr	ymp_player_restart
+.no_tune_restart:
 	rts
 ; -----------------------------------------------------------------------
 		even
 ; -----------------------------------------------------------------------
-; 
-tmp:		ds.w	1
-cache_write_ptr:ds.l	1
-
-player_state:	ds.b	ymunp_size*NUM_REGS
-cache:		ds.b	cache_size*NUM_REGS
-output_buffer:	ds.b	NUM_REGS
-		even
+;
+ymp_tune_ptr:		ds.l	1
+ymp_cache_write_ptr:	ds.l	1
+ymp_cache_countdown:	ds.w	1		; countdown to looping of cache ptrs
+ymp_streams_state:	ds.b	ymunp_size*NUM_REGS
+ymp_vbl_countdown:	ds.w	1		; number of VBLs left to restart
+ymp_output_buffer:	ds.b	NUM_REGS
+ymp_cache:		ds.b	YMP_CACHE_SIZE*NUM_REGS
+			even
 
 ; Our packed data file.
-player_data:	incbin	sanxion.all.ymp
-		even
+player_data:		incbin	test_output/tomsdiner.ym3.cpp.ymp
+			even

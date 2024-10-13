@@ -573,8 +573,30 @@ def read_delta(fname, outfname, settings):
 	outstrm.write(packed)
 	outstrm.close()
 
-settings = Settings()
-settings.search_dist = 512
+if __name__ == '__main__':
+	settings = Settings()
+	settings.search_dist = 512
+
+	import argparse
+	parser = argparse.ArgumentParser(
+						prog='miny',
+						description='Compress YM3 format data.')
+	parser.add_argument('infile')           # positional argument
+	parser.add_argument('outfile')           # positional argument
+	parser.add_argument('--v2', action='store_true')
+	parser.add_argument('--mode', type=str, choices=("default", 
+                                                  "grouped"))
+	args = parser.parse_args()
+	pf = PackFormat1()
+	if args.v2:
+		pf = PackFormat2()
+
+	if args.mode == "grouped":
+		read_ym2(args.infile, args.outfile, pf, settings)
+	else:
+		read_ym(args.infile, args.outfile, pf, settings)
+
+"""
 pack_formats = (PackFormat1(), PackFormat2())
 for format in range(0, 2):
 	for grouping in ('all', 'grouped', 'single'):
@@ -594,3 +616,4 @@ for format in range(0, 2):
 read_delta("test_data/motus.ym", "test_data/motus.delta", settings)
 read_delta("test_data/led2.ym", "test_data/led2.delta", settings)
 read_delta("test_data/sanxion.ym", "test_data/sanxion.delta", settings)
+"""

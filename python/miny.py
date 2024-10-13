@@ -63,8 +63,8 @@ class PackFormat1:
 		offset = int(offset / multiple)
 
 		cost = 2            # 1 for each of count + offset
-		if count >= 256:
-			cost += 1
+		if count >= 128:
+			cost += 2		# this needs extra 16-bit value
 		if offset >= 256:
 			cost += 2       # 2 extra bytes
 		return cost

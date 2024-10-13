@@ -90,7 +90,7 @@ struct EncoderV1
 			if (tmpLiterals == 0)
 				cost++;			// switch cost
 			if (tmpLiterals == 127)
-				cost++;			// needs 2 bytes now
+				cost+= 2;			// needs 2 bytes now
 			++tmpLiterals;
 		}
 
@@ -98,11 +98,11 @@ struct EncoderV1
 		// A match is always new, so apply full cost
 		if (match)
 		{
-			cost = 1;
+			cost += 1;		// length or zero byte
 			if (match->length >= 128)
-				cost++;
+				cost += 2;	// needs 2 more bytes
 
-			cost += 1;
+			cost += 1;		// offset or
 			if (match->offset >= 256)
 				cost += 2;
 		}

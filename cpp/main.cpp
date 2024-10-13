@@ -103,8 +103,12 @@ struct EncoderV1
 				cost += 2;	// needs 2 more bytes
 
 			cost += 1;		// offset or
-			if (match->offset >= 256)
-				cost += 2;
+			uint32_t offset = match->offset;
+			while (offset >= 256)
+			{
+				cost++;
+				offset -= 255;
+			}
 		}
 		return cost;
 	}
@@ -163,14 +167,14 @@ private:
 	static void EncodeOffset(OutputBuffer& output, uint32_t offset)
 	{
 		assert(offset > 0);
-		if (offset < 256)
-			output.push_back(offset);
-		else
+		while (offset >= 256)
 		{
 			output.push_back(0);
-			output.push_back(offset >> 8);
-			output.push_back(offset & 255);
+			offset -= 255;
 		}
+		assert(offset > 0);
+		assert(offset < 256);
+		output.push_back(offset);
 	}
 };
 

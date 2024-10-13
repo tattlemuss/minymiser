@@ -65,8 +65,10 @@ class PackFormat1:
 		cost = 2            # 1 for each of count + offset
 		if count >= 128:
 			cost += 2		# this needs extra 16-bit value
-		if offset >= 256:
-			cost += 2       # 2 extra bytes
+
+		while offset >= 256:
+			cost += 1
+			offset -= 255
 		return cost
 
 	def create_bytestream(self, packed, multiple):
@@ -103,12 +105,12 @@ class PackFormat1:
 			assert(offset > 0)
 			assert((offset % multiple) == 0)
 			offset = int(offset / multiple)
-			if offset < 256:
-				output.append(offset)
-			else:
+			while offset >= 256:
 				output.append(0)
-				output.append(offset >> 8)
-				output.append(offset & 255)
+				offset -= 255
+			assert(offset != 0)
+			assert(offset < 256)
+			output.append(offset)
 
 		output = bytearray()
 		for p in packed:
@@ -152,9 +154,14 @@ class PackFormat1:
 				count = cmd & 0x7f
 				if count == 0:
 					count = i.byte() << 8 | i.byte()
-				offset = i.byte()
-				if offset == 0:
-					offset = i.byte() << 8 | i.byte()
+
+				offset = 0
+				while True:
+					tmp = i.byte()
+					if tmp != 0:
+						offset += tmp
+						break
+					offset += 255
 				count *= multiple
 				offset *= multiple
 				for x in range(0, count):

@@ -132,6 +132,7 @@ ymp_player_update:
 	moveq	#NUM_REGS-1,d1				; d1 = loop counter
 	move.w	#ymunp_size,d2				; d2 = stream structure size
 	move.w	#YMP_CACHE_SIZE,d3			; d3 = cache size
+	moveq	#0,d4					; d4 = temp used for decoding
 ymp_stream_update:
 	; a0	= ymunp struct
 	subq.w	#1,ymunp_copy_count_w(a0)
@@ -153,8 +154,14 @@ ymp_stream_update:
 
 	; Now read offset
 	moveq	#0,d0
-	move.b	(a1)+,d0
-	bsr.s	read_extended_number
+.read_offset_b:
+	move.b	(a1)+,d4
+	bne.s	.read_offset_done
+	add.w	#255,d0
+	bra.s	.read_offset_b
+.read_offset_done:
+	add.w	d4,d0					; add final non-zero index
+
 	move.l	a1,ymunp_stream_read_ptr(a0)		; remember stream ptr now, before trashing a1
 
 	; Apply offset backwards from where we are writing
@@ -270,5 +277,5 @@ ymp_cache:		ds.b	YMP_CACHE_SIZE*NUM_REGS
 			even
 
 ; Our packed data file.
-player_data:		incbin	test_output/tomsdiner.ym3.cpp.ymp
+player_data:		incbin	test_output/inwaves.ym3.go.ymp
 			even

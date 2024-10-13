@@ -54,11 +54,12 @@ type packedstream struct {
 }
 
 type encoder interface {
-	// Calculate the cost for adding literals or matches
+	// Calculate the cost for adding literals or matches, or both
 	cost(lit_count int, m match) int
-	// Calculate the cost of just a match
+
+	// Apply N literals to the internal state
 	lit(lit_count int)
-	// Apply a match
+	// Apply a match to the internal state
 	match(m match)
 
 	// Encodes all the given tokens into a binary stream.
@@ -80,18 +81,15 @@ func encode_count(output []byte, count int, literal_flag byte) []byte {
 }
 
 func encode_offset(output []byte, offset int) []byte {
-	//for offset >= 256 {
-	//	output = append(output, byte(0))
-	//	offset -= 256
-	//}
-	//output = enc_byte(output, byte(offset))
-	if offset < 256 {
-		output = append(output, byte(offset))
-	} else {
+	for offset >= 256 {
+		// 256 can be encoded as "255 + 1"
 		output = append(output, 0)
-		output = enc_word(output, uint16(offset))
+		offset -= 255
 	}
-
+	if offset == 0 {
+		panic("Problem when encoding offset")
+	}
+	output = enc_byte(output, byte(offset))
 	return output
 }
 
@@ -145,10 +143,12 @@ func (e *encoder_v1) match_cost(m match) int {
 		if m.len >= 128 {
 			cost += 2
 		}
-		// distance encoding
+		// pffset encoding
 		cost += 1
-		if m.off >= 256 {
-			cost += 2
+		offset := m.off
+		for offset >= 256 {
+			cost++
+			offset -= 255
 		}
 	}
 	return cost

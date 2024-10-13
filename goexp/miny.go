@@ -244,7 +244,7 @@ func pack_register_greedy(enc encoder, data []byte) []byte {
 	return enc.encode(tokens, data)
 }
 
-func pack_register_lazy(enc encoder, data []byte) []byte {
+func pack_register_lazy(enc encoder, data []byte, use_cheapest bool) []byte {
 	var tokens []token
 
 	used_match := 0
@@ -252,9 +252,14 @@ func pack_register_lazy(enc encoder, data []byte) []byte {
 	used_second := 0
 	head := 0
 
+	var best0 match
+	var best1 match
 	for head < len(data) {
-		best0 := find_longest_match(data, head, buffer_size)
-		//best0 := find_cheapest_match(enc, data, head, buffer_size)
+		if use_cheapest {
+			best0 = find_cheapest_match(enc, data, head, buffer_size)
+		} else {
+			best0 = find_longest_match(data, head, buffer_size)
+		}
 		choose_lit := best0.len == 0
 
 		// We have 2 choices really
@@ -275,8 +280,11 @@ func pack_register_lazy(enc encoder, data []byte) []byte {
 			// We only need to decide to choose the second match, if both
 			// 0 and 1 are matches rather than literals.
 			if best0.len != 0 && head+1 < len(data) {
-				best1 := find_longest_match(data, head+1, buffer_size)
-				//best1 := find_cheapest_match(enc, data, head+1, buffer_size)
+				if use_cheapest {
+					best1 = find_cheapest_match(enc, data, head+1, buffer_size)
+				} else {
+					best1 = find_longest_match(data, head+1, buffer_size)
+				}
 				if best1.len != 0 {
 					cost0 := enc.cost(0, best0)
 					cost1 := enc.cost(1, best1)
@@ -341,7 +349,7 @@ func pack(data []byte) ([]byte, error) {
 		}
 		enc := encoder_v1{0}
 		greedy := pack_register_greedy(&enc, reg_data)
-		all_data[reg].data = pack_register_lazy(&enc, reg_data)
+		all_data[reg].data = pack_register_lazy(&enc, reg_data, true)
 		fmt.Println("reg", reg, "Packed length", len(all_data[reg].data), "Greedy", len(greedy))
 	}
 

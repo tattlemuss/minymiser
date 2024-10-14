@@ -9,6 +9,22 @@ import (
 
 const num_regs = 14
 
+var register_names = [num_regs]string{
+	"A period lo",
+	"A period hi",
+	"B period lo",
+	"B period hi",
+	"C period lo",
+	"C period hi",
+	"Noise period",
+	"Mixer",
+	"A volume",
+	"B volume",
+	"C volume",
+	"Env period lo",
+	"Env period hi",
+	"Env shape"}
+
 func check(err error) {
 	if err != nil {
 		panic(err)
@@ -222,10 +238,10 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size
 			match_bytes += best0.len
 		}
 	}
-	fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
-		"used second", used_second)
 	fmt.Printf("\tLazy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
 		percent(match_bytes, lit_bytes+match_bytes))
+	fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
+		"used second", used_second)
 	return enc.encode(tokens, data)
 }
 
@@ -250,14 +266,13 @@ func pack(data []byte) ([]byte, error) {
 	use_cheapest := false
 	buffer_size := 512
 
-	scale_deltas := make([]int, num_regs)
-
+	//scale_deltas := make([]int, num_regs)
 	for reg := 0; reg < num_regs; reg++ {
 		// Split register data
 		start_pos := 4 + reg*data_size_per_reg
 		reg_data := data[start_pos : start_pos+data_size_per_reg]
 
-		fmt.Println("Packing register", reg)
+		fmt.Println("Packing register", reg, register_names[reg])
 		// Pack
 		enc := encoder_v1{0}
 		greedy := pack_register_greedy(&enc, reg_data, buffer_size)

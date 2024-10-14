@@ -8,7 +8,6 @@ import (
 )
 
 const num_regs = 14
-const buffer_size = 512
 
 func check(err error) {
 	if err != nil {
@@ -20,20 +19,11 @@ func empty_arr() []byte {
 	return make([]byte, 0)
 }
 
-func enc_byte(output []byte, value byte) []byte {
-	return append(output, value)
-}
-
-func enc_word(output []byte, value uint16) []byte {
-	output = append(output, byte(value>>8))
-	return append(output, byte(value&255))
-}
-
-func enc_long(output []byte, value uint32) []byte {
-	output = append(output, byte(value>>24)&255)
-	output = append(output, byte(value>>16)&255)
-	output = append(output, byte(value>>8)&255)
-	return append(output, byte(value&255))
+func percent(num int, denom int) float32 {
+	if denom == 0 {
+		return 0.0
+	}
+	return 100.0 * float32(num) / float32(denom)
 }
 
 // Describes a match or a series of literals.
@@ -68,146 +58,6 @@ type encoder interface {
 
 	// Unpacks the given packed binary stream.
 	unpack(input []byte) []byte
-}
-
-type encoder_v1 struct {
-	num_literals int
-}
-
-func encode_count(output []byte, count int, literal_flag byte) []byte {
-	if count < 128 {
-		output = append(output, byte(count)|literal_flag)
-	} else {
-		output = append(output, 0|literal_flag)
-		output = enc_word(output, uint16(count))
-	}
-	return output
-}
-
-func encode_offset(output []byte, offset int) []byte {
-	for offset >= 256 {
-		// 256 can be encoded as "255 + 1"
-		output = append(output, 0)
-		offset -= 255
-	}
-	if offset == 0 {
-		panic("Problem when encoding offset")
-	}
-	output = enc_byte(output, byte(offset))
-	return output
-}
-
-// Return the additional cost (in bytes) of adding literal(s) and match to an output stream
-func (e *encoder_v1) cost(lit_count int, m match) int {
-	cost := 0
-	tmp_literals := e.num_literals
-	cost += lit_count
-
-	// Check if literal count will increase cost
-	for i := 0; i < lit_count; i += 1 {
-		if tmp_literals == 0 {
-			cost += 1 //  // cost of switching match->list
-		} else if tmp_literals == 127 {
-			// cost of swtiching to extra-byte encoing
-			cost += 2 // needs 2 extra bytes
-		}
-		tmp_literals += 1
-	}
-
-	cost += e.match_cost(m)
-	return cost
-}
-
-// Calculate the byte cost of only a match
-func (e *encoder_v1) match_cost(m match) int {
-	cost := 0
-	// Match
-	// A match is always new, so apply full cost
-	if m.len > 0 {
-		// length encoding
-		cost = 1
-		if m.len >= 128 {
-			cost += 2
-		}
-		// pffset encoding
-		cost += 1
-		offset := m.off
-		for offset >= 256 {
-			cost++
-			offset -= 255
-		}
-	}
-	return cost
-}
-
-func (e *encoder_v1) encode(tokens []token, input []byte) []byte {
-	output := make([]byte, 0)
-	for i := 0; i < len(tokens); i += 1 {
-		var t token = tokens[i]
-		if t.is_match {
-			output = encode_count(output, t.len, 0)
-			output = encode_offset(output, t.off)
-		} else {
-			// Encode the literal
-			output = encode_count(output, t.len, 0x80)
-			literals := input[t.off : t.off+t.len]
-			// https://github.com/golang/go/issues/28292
-			output = append(output, literals...)
-		}
-	}
-	return output
-}
-
-func (e *encoder_v1) unpack(input []byte) []byte {
-	output := make([]byte, 0)
-	head := 0
-	for head < len(input) {
-		top := input[head]
-		head++
-		if (top & 0x80) != 0 {
-			// Literals
-			// Length only
-			var count int = int(top & 0x7f)
-			if count == 0 {
-				count = int(input[head]) << 8
-				count |= int(input[head+1])
-				head += 2
-			}
-			output = append(output, input[head:head+count]...)
-			head += count
-		} else {
-			// Match
-			// Length, then Offset
-			var count int = int(top & 0x7f)
-			if count == 0 {
-				count = int(input[head]) << 8
-				count |= int(input[head+1])
-				head += 2
-			}
-			var offset int = 0
-			for input[head] == 0 {
-				offset += 255
-				head++
-			}
-			offset += int(input[head])
-			head++
-			match_pos := len(output) - offset
-			for count > 0 {
-				output = append(output, output[match_pos])
-				match_pos++
-				count--
-			}
-		}
-	}
-	return output
-}
-
-func (e *encoder_v1) lit(lit_count int) {
-	e.num_literals += lit_count
-}
-
-func (e *encoder_v1) match(m match) {
-	e.num_literals = 0
 }
 
 func find_longest_match(data []byte, head int, distance int) match {
@@ -258,13 +108,12 @@ func find_cheapest_match(enc encoder, data []byte, head int, distance int) match
 	return best_match
 }
 
-func pack_register_greedy(enc encoder, data []byte) []byte {
+func pack_register_greedy(enc encoder, data []byte, buffer_size int) []byte {
 	var tokens []token
 
 	head := 0
-	lit_count := 0
-	match_count := 0
 	match_bytes := 0
+	lit_bytes := 0
 
 	for head < len(data) {
 		//best := find_cheapest_match(enc, data, head, buffer_size)
@@ -272,32 +121,33 @@ func pack_register_greedy(enc encoder, data []byte) []byte {
 		if best.len != 0 {
 			head += best.len
 			tokens = append(tokens, token{true, best.len, best.off})
-			match_count += 1
 			match_bytes += best.len
 		} else {
 			last_index := len(tokens) - 1
 			// Literal
-			if last_index >= 0 && tokens[last_index].is_match == false {
+			if last_index >= 0 && !tokens[last_index].is_match {
 				tokens[last_index].len += 1
 			} else {
 				tokens = append(tokens, token{false, 1, head})
 			}
 			head += 1 // literal
-			lit_count += 1
+			lit_bytes += 1
 		}
 	}
-	fmt.Printf("Matches %v Literals %v (%v%%)\n", match_count, lit_count,
-		match_count*100/(lit_count+match_count))
+	fmt.Printf("\tGreedy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
+		percent(match_bytes, lit_bytes+match_bytes))
 
 	return enc.encode(tokens, data)
 }
 
-func pack_register_lazy(enc encoder, data []byte, use_cheapest bool) []byte {
+func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size int) []byte {
 	var tokens []token
 
 	used_match := 0
 	used_matchlit := 0
 	used_second := 0
+	match_bytes := 0
+	lit_bytes := 0
 	head := 0
 
 	var best0 match
@@ -352,7 +202,7 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool) []byte {
 		if choose_lit {
 			last_index := len(tokens) - 1
 			// Literal
-			if last_index >= 0 && tokens[last_index].is_match == false {
+			if last_index >= 0 && !tokens[last_index].is_match {
 				tokens[last_index].len += 1
 			} else {
 				tokens = append(tokens, token{false, 1, head})
@@ -360,53 +210,61 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool) []byte {
 			//fmt.Println(head, data[head], "Literal len", tokens[len(tokens)-1].length)
 			head += 1 // literal
 			enc.lit(1)
+			lit_bytes++
 		} else {
 			head += best0.len
 			tokens = append(tokens, token{true, best0.len, best0.off})
 			used_match += 1
 			enc.match(best0)
+			match_bytes += best0.len
 		}
 	}
-	fmt.Println("Used match:", used_match, "used matchlit:", used_matchlit,
+	fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
 		"used second", used_second)
-
+	fmt.Printf("\tLazy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
+		percent(match_bytes, lit_bytes+match_bytes))
 	return enc.encode(tokens, data)
 }
 
+// Pack a YM3 data file and return an encoded array of bytes.
 func pack(data []byte) ([]byte, error) {
 	// check header
 	if data[0] != 'Y' ||
 		data[1] != 'M' ||
 		data[2] != '3' ||
 		data[3] != '!' {
-		return empty_arr(), errors.New("Not a YM3 file")
+		return empty_arr(), errors.New("not a YM3 file")
 	}
 
 	data_size := len(data) - 4
 	if data_size%num_regs != 0 {
-		return empty_arr(), errors.New("Unexpected data size")
+		return empty_arr(), errors.New("unexpected data size")
 	}
 	data_size_per_reg := data_size / num_regs
 	all_data := make([]packedstream, num_regs)
+	buffer_size := 512
 	for reg := 0; reg < num_regs; reg += 1 {
 		// Split register data
-		reg_data := make([]byte, data_size_per_reg)
-		for i := 0; i < data_size_per_reg; i += 1 {
-			src_i := 4 + reg*data_size_per_reg + i
-			reg_data[i] = data[src_i]
-		}
+		start_pos := 4 + reg*data_size_per_reg
+		reg_data := data[start_pos : start_pos+data_size_per_reg]
+
+		fmt.Println("Packing register", reg)
+		// Pack
 		enc := encoder_v1{0}
-		greedy := pack_register_greedy(&enc, reg_data)
-		all_data[reg].data = pack_register_lazy(&enc, reg_data, true)
-		fmt.Println("reg", reg, "Packed length", len(all_data[reg].data), "Greedy", len(greedy))
+		greedy := pack_register_greedy(&enc, reg_data, buffer_size)
+		all_data[reg].data = pack_register_lazy(&enc, reg_data, true, buffer_size)
+
+		packed := &all_data[reg].data
+		fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
+			len(*packed), len(greedy), len(greedy)-len(*packed))
 
 		// Verify by unpacking
-		unpacked := enc.unpack(all_data[reg].data)
-		fmt.Println("reg", reg, "Unpacked length", len(unpacked), " expected length", len(reg_data))
+		unpacked := enc.unpack(*packed)
+		fmt.Println("\tUnpacked length", len(unpacked), " expected length", len(reg_data))
 		if !reflect.DeepEqual(reg_data, unpacked) {
-			return empty_arr(), errors.New("Failed to verify pack<->unpack round trip, there is a bug")
+			return empty_arr(), errors.New("failed to verify pack<->unpack round trip, there is a bug")
 		} else {
-			fmt.Println("Verify OK")
+			fmt.Println("\tVerify OK")
 		}
 	}
 
@@ -439,11 +297,11 @@ func main() {
 
 	dat, err := os.ReadFile(argsWithoutProg[0])
 	check(err)
-	fmt.Println("File size:", len(dat))
 
 	packed_data, err := pack(dat)
 	check(err)
-	fmt.Println("Packed size:", len(packed_data))
+	fmt.Printf("Original size: %d Packed size %d (%.2f%%)",
+		len(dat), len(packed_data), percent(len(packed_data), len(dat)))
 
 	err = os.WriteFile(argsWithoutProg[1], packed_data, 0644)
 	check(err)

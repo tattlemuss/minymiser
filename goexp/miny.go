@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 )
 
 const num_regs = 14
@@ -64,6 +65,9 @@ type encoder interface {
 
 	// Encodes all the given tokens into a binary stream.
 	encode(tokens []token, input []byte) []byte
+
+	// Unpacks the given packed binary stream.
+	unpack(input []byte) []byte
 }
 
 type encoder_v1 struct {
@@ -90,24 +94,6 @@ func encode_offset(output []byte, offset int) []byte {
 		panic("Problem when encoding offset")
 	}
 	output = enc_byte(output, byte(offset))
-	return output
-}
-
-func (e *encoder_v1) encode(tokens []token, input []byte) []byte {
-	output := make([]byte, 0)
-	for i := 0; i < len(tokens); i += 1 {
-		var t token = tokens[i]
-		if t.is_match {
-			output = encode_count(output, t.len, 0)
-			output = encode_offset(output, t.off)
-		} else {
-			// Encode the literal
-			output = encode_count(output, t.len, 0x80)
-			literals := input[t.off : t.off+t.len]
-			// https://github.com/golang/go/issues/28292
-			output = append(output, literals...)
-		}
-	}
 	return output
 }
 
@@ -152,6 +138,68 @@ func (e *encoder_v1) match_cost(m match) int {
 		}
 	}
 	return cost
+}
+
+func (e *encoder_v1) encode(tokens []token, input []byte) []byte {
+	output := make([]byte, 0)
+	for i := 0; i < len(tokens); i += 1 {
+		var t token = tokens[i]
+		if t.is_match {
+			output = encode_count(output, t.len, 0)
+			output = encode_offset(output, t.off)
+		} else {
+			// Encode the literal
+			output = encode_count(output, t.len, 0x80)
+			literals := input[t.off : t.off+t.len]
+			// https://github.com/golang/go/issues/28292
+			output = append(output, literals...)
+		}
+	}
+	return output
+}
+
+func (e *encoder_v1) unpack(input []byte) []byte {
+	output := make([]byte, 0)
+	head := 0
+	for head < len(input) {
+		top := input[head]
+		head++
+		if (top & 0x80) != 0 {
+			// Literals
+			// Length only
+			var count int = int(top & 0x7f)
+			if count == 0 {
+				count = int(input[head]) << 8
+				count |= int(input[head+1])
+				head += 2
+			}
+			output = append(output, input[head:head+count]...)
+			head += count
+		} else {
+			// Match
+			// Length, then Offset
+			var count int = int(top & 0x7f)
+			if count == 0 {
+				count = int(input[head]) << 8
+				count |= int(input[head+1])
+				head += 2
+			}
+			var offset int = 0
+			for input[head] == 0 {
+				offset += 255
+				head++
+			}
+			offset += int(input[head])
+			head++
+			match_pos := len(output) - offset
+			for count > 0 {
+				output = append(output, output[match_pos])
+				match_pos++
+				count--
+			}
+		}
+	}
+	return output
 }
 
 func (e *encoder_v1) lit(lit_count int) {
@@ -351,6 +399,15 @@ func pack(data []byte) ([]byte, error) {
 		greedy := pack_register_greedy(&enc, reg_data)
 		all_data[reg].data = pack_register_lazy(&enc, reg_data, true)
 		fmt.Println("reg", reg, "Packed length", len(all_data[reg].data), "Greedy", len(greedy))
+
+		// Verify by unpacking
+		unpacked := enc.unpack(all_data[reg].data)
+		fmt.Println("reg", reg, "Unpacked length", len(unpacked), " expected length", len(reg_data))
+		if !reflect.DeepEqual(reg_data, unpacked) {
+			return empty_arr(), errors.New("Failed to verify pack<->unpack round trip, there is a bug")
+		} else {
+			fmt.Println("Verify OK")
+		}
 	}
 
 	// Generate the final data

@@ -19,11 +19,15 @@ func empty_arr() []byte {
 	return make([]byte, 0)
 }
 
-func percent(num int, denom int) float32 {
+func ratio(num int, denom int) float32 {
 	if denom == 0 {
 		return 0.0
 	}
-	return 100.0 * float32(num) / float32(denom)
+	return float32(num) / float32(denom)
+}
+
+func percent(num int, denom int) float32 {
+	return 100.0 * ratio(num, denom)
 }
 
 // Describes a match or a series of literals.
@@ -60,6 +64,16 @@ type encoder interface {
 	unpack(input []byte) []byte
 }
 
+func add_literals(tokens []token, count int, pos int) []token {
+	last_index := len(tokens) - 1
+	if last_index >= 0 && !tokens[last_index].is_match {
+		tokens[last_index].len++
+	} else {
+		return append(tokens, token{false, count, pos})
+	}
+	return tokens
+}
+
 func find_longest_match(data []byte, head int, distance int) match {
 	best_offset := -1
 	best_length := 0
@@ -68,11 +82,11 @@ func find_longest_match(data []byte, head int, distance int) match {
 		max_dist = head
 	}
 
-	for offset := 1; offset <= max_dist; offset += 1 {
+	for offset := 1; offset <= max_dist; offset++ {
 		length := 0
 		check_pos := head - offset
 		for head+length < len(data) && data[check_pos+length] == data[head+length] {
-			length += 1
+			length++
 		}
 		if length >= 3 && length > best_length {
 			best_length = length
@@ -90,11 +104,11 @@ func find_cheapest_match(enc encoder, data []byte, head int, distance int) match
 	if head < distance {
 		max_dist = head
 	}
-	for offset := 1; offset <= max_dist; offset += 1 {
+	for offset := 1; offset <= max_dist; offset++ {
 		length := 0
 		check_pos := head - offset
 		for head+length < len(data) && data[check_pos+length] == data[head+length] {
-			length += 1
+			length++
 		}
 		if length >= 3 {
 			m := match{len: length, off: offset}
@@ -123,15 +137,10 @@ func pack_register_greedy(enc encoder, data []byte, buffer_size int) []byte {
 			tokens = append(tokens, token{true, best.len, best.off})
 			match_bytes += best.len
 		} else {
-			last_index := len(tokens) - 1
 			// Literal
-			if last_index >= 0 && !tokens[last_index].is_match {
-				tokens[last_index].len += 1
-			} else {
-				tokens = append(tokens, token{false, 1, head})
-			}
-			head += 1 // literal
-			lit_bytes += 1
+			tokens = add_literals(tokens, 1, head)
+			head++ // literal
+			lit_bytes++
 		}
 	}
 	fmt.Printf("\tGreedy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
@@ -169,12 +178,12 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size
 			cost_lit := enc.cost(best0.len, match{})
 			if cost_lit < cost0 {
 				choose_lit = true
-				used_matchlit += 1
+				used_matchlit++
 			}
 		}
 
 		if !choose_lit {
-			used_match += 1
+			used_match++
 			// We only need to decide to choose the second match, if both
 			// 0 and 1 are matches rather than literals.
 			if best0.len != 0 && head+1 < len(data) {
@@ -186,8 +195,8 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size
 				if best1.len != 0 {
 					cost0 := enc.cost(0, best0)
 					cost1 := enc.cost(1, best1)
-					rate0 := float32(cost0) / float32(best0.len)
-					rate1 := float32(cost1) / float32(1+best1.len)
+					rate0 := ratio(cost0, best0.len)
+					rate1 := ratio(cost1, 1+best1.len)
 					if rate1 < rate0 {
 						choose_lit = true
 						used_match--
@@ -200,21 +209,15 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size
 		// Add the decision to the token stream,
 		// and update the encoder's state so it can update future encoding costs.
 		if choose_lit {
-			last_index := len(tokens) - 1
 			// Literal
-			if last_index >= 0 && !tokens[last_index].is_match {
-				tokens[last_index].len += 1
-			} else {
-				tokens = append(tokens, token{false, 1, head})
-			}
-			//fmt.Println(head, data[head], "Literal len", tokens[len(tokens)-1].length)
-			head += 1 // literal
+			tokens = add_literals(tokens, 1, head)
+			head++
 			enc.lit(1)
 			lit_bytes++
 		} else {
 			head += best0.len
 			tokens = append(tokens, token{true, best0.len, best0.off})
-			used_match += 1
+			used_match++
 			enc.match(best0)
 			match_bytes += best0.len
 		}
@@ -242,8 +245,14 @@ func pack(data []byte) ([]byte, error) {
 	}
 	data_size_per_reg := data_size / num_regs
 	all_data := make([]packedstream, num_regs)
+
+	// Compression settings
+	use_cheapest := false
 	buffer_size := 512
-	for reg := 0; reg < num_regs; reg += 1 {
+
+	scale_deltas := make([]int, num_regs)
+
+	for reg := 0; reg < num_regs; reg++ {
 		// Split register data
 		start_pos := 4 + reg*data_size_per_reg
 		reg_data := data[start_pos : start_pos+data_size_per_reg]
@@ -252,15 +261,19 @@ func pack(data []byte) ([]byte, error) {
 		// Pack
 		enc := encoder_v1{0}
 		greedy := pack_register_greedy(&enc, reg_data, buffer_size)
-		all_data[reg].data = pack_register_lazy(&enc, reg_data, true, buffer_size)
-
 		packed := &all_data[reg].data
+		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, buffer_size)
+
+		// Experiment to gauge how much a stream benefits from the larger buffer size
+		//scale_test := pack_register_lazy(&enc, reg_data, use_cheapest, 128)
+		//scale_deltas[reg] = len(scale_test) - len(*packed)
+		//fmt.Printf("\t **** Scale delta %d\n", scale_deltas[reg])
+
 		fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
 			len(*packed), len(greedy), len(greedy)-len(*packed))
 
 		// Verify by unpacking
 		unpacked := enc.unpack(*packed)
-		fmt.Println("\tUnpacked length", len(unpacked), " expected length", len(reg_data))
 		if !reflect.DeepEqual(reg_data, unpacked) {
 			return empty_arr(), errors.New("failed to verify pack<->unpack round trip, there is a bug")
 		} else {
@@ -276,13 +289,13 @@ func pack(data []byte) ([]byte, error) {
 
 	// Output size in VBLs first
 	output_data = enc_word(output_data, uint16(data_size_per_reg))
-	for reg := 0; reg < num_regs; reg += 1 {
+	for reg := 0; reg < num_regs; reg++ {
 		output_data = enc_long(output_data, uint32(offset))
 		offset += len(all_data[reg].data)
 	}
 
 	// ... then the data
-	for reg := 0; reg < num_regs; reg += 1 {
+	for reg := 0; reg < num_regs; reg++ {
 		output_data = append(output_data, all_data[reg].data...)
 	}
 

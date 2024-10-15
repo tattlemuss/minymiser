@@ -59,6 +59,14 @@ type packedstream struct {
 	data []byte
 }
 
+// Rpre
+type ym_streams struct {
+	// A binary array for each register to pack
+	register  [num_regs]packedstream
+	num_vbls  int
+	data_size int
+}
+
 type encoder interface {
 	// Calculate the cost for adding literals or matches, or both
 	cost(lit_count int, m match) int
@@ -257,43 +265,51 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_
 	return enc.encode(tokens, data)
 }
 
-// Pack a YM3 data file and return an encoded array of bytes.
-func pack(data []byte, file_cfg file_pack_cfg) ([]byte, error) {
+func create_ym_streams(data []byte) (ym_streams, error) {
 	// check header
 	if data[0] != 'Y' ||
 		data[1] != 'M' ||
 		data[2] != '3' ||
 		data[3] != '!' {
-		return empty_arr(), errors.New("not a YM3 file")
+		return ym_streams{}, errors.New("not a YM3 file")
 	}
 
 	data_size := len(data) - 4
 	if data_size%num_regs != 0 {
-		return empty_arr(), errors.New("unexpected data size")
+		return ym_streams{}, errors.New("unexpected data size")
 	}
+	// Convert to memory types
 	data_size_per_reg := data_size / num_regs
-	all_data := make([]packedstream, num_regs)
+	ym3 := ym_streams{}
+	ym3.num_vbls = data_size_per_reg
+	ym3.data_size = data_size
+	for reg := 0; reg < num_regs; reg++ {
+		// Split register data
+		start_pos := 4 + reg*data_size_per_reg
+		ym3.register[reg].data = data[start_pos : start_pos+data_size_per_reg]
+	}
+	return ym3, nil
+}
 
+// Pack a YM3 data file and return an encoded array of bytes.
+func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	// Compression settings
 	use_cheapest := false
 
 	stream_cfg := stream_pack_cfg{}
 	stream_cfg.buffer_size = file_cfg.cache_size / num_regs
 	stream_cfg.verbose = file_cfg.verbose
+	packed_streams := make([]packedstream, num_regs)
 
-	//scale_deltas := make([]int, num_regs)
 	for reg := 0; reg < num_regs; reg++ {
-		// Split register data
-		start_pos := 4 + reg*data_size_per_reg
-		reg_data := data[start_pos : start_pos+data_size_per_reg]
-
 		if file_cfg.verbose {
 			fmt.Println("Packing register", reg, register_names[reg])
 		}
 		// Pack
 		enc := encoder_v1{0}
+		reg_data := ym_data.register[reg].data
 		greedy := pack_register_greedy(&enc, reg_data, stream_cfg)
-		packed := &all_data[reg].data
+		packed := &packed_streams[reg].data
 		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, stream_cfg)
 
 		// Experiment to gauge how much a stream benefits from the larger buffer size
@@ -323,33 +339,43 @@ func pack(data []byte, file_cfg file_pack_cfg) ([]byte, error) {
 	var offset int = 4*num_regs + 2
 
 	// Output size in VBLs first
-	output_data = enc_word(output_data, uint16(data_size_per_reg))
+	output_data = enc_word(output_data, uint16(ym_data.num_vbls))
 	for reg := 0; reg < num_regs; reg++ {
 		output_data = enc_long(output_data, uint32(offset))
-		offset += len(all_data[reg].data)
+		offset += len(packed_streams[reg].data)
 	}
 
 	// ... then the data
 	for reg := 0; reg < num_regs; reg++ {
-		output_data = append(output_data, all_data[reg].data...)
+		output_data = append(output_data, packed_streams[reg].data...)
 	}
 
 	return output_data, nil
 }
 
-func pack_file(input_path string, output_path string, file_cfg file_pack_cfg) error {
+func load_ym_stream(input_path string) (ym_streams, error) {
 	dat, err := os.ReadFile(input_path)
 	if err != nil {
-		return err
+		return ym_streams{}, err
 	}
 
-	packed_data, err := pack(dat, file_cfg)
+	ym_data, err := create_ym_streams(dat)
+	return ym_data, err
+}
+
+func pack_file(input_path string, output_path string, file_cfg file_pack_cfg) error {
+	ym_data, err := load_ym_stream(input_path)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Original size: %d Packed size %d (%.2f%%) Total RAM %d",
-		len(dat), len(packed_data), percent(len(packed_data), len(dat)),
+	packed_data, err := pack(&ym_data, file_cfg)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Original size: %d Packed size %d (%.2f%%) Total RAM %d\n",
+		ym_data.data_size, len(packed_data), percent(len(packed_data), ym_data.data_size),
 		file_cfg.cache_size+len(packed_data))
 
 	err = os.WriteFile(output_path, packed_data, 0644)

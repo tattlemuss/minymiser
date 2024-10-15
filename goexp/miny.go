@@ -85,13 +85,14 @@ type encoder interface {
 
 // Describes packing config for a whole file
 type file_pack_cfg struct {
-	cache_size int
+	cache_size int // cache size for whole file
 	verbose    bool
+	verify     bool
 }
 
 // Describes packing config for a single register stream
 type stream_pack_cfg struct {
-	buffer_size int
+	buffer_size int // cache size for just this stream
 	verbose     bool
 }
 
@@ -308,7 +309,6 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		// Pack
 		enc := encoder_v1{0}
 		reg_data := ym_data.register[reg].data
-		greedy := pack_register_greedy(&enc, reg_data, stream_cfg)
 		packed := &packed_streams[reg].data
 		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, stream_cfg)
 
@@ -316,18 +316,21 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		//scale_test := pack_register_lazy(&enc, reg_data, use_cheapest, 128)
 		//scale_deltas[reg] = len(scale_test) - len(*packed)
 		//fmt.Printf("\t **** Scale delta %d\n", scale_deltas[reg])
-		if file_cfg.verbose {
-			fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
-				len(*packed), len(greedy), len(greedy)-len(*packed))
-		}
+		//greedy := pack_register_greedy(&enc, reg_data, stream_cfg)
+		//if file_cfg.verbose {
+		//	fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
+		//		len(*packed), len(greedy), len(greedy)-len(*packed))
+		//}
 
 		// Verify by unpacking
-		unpacked := enc.unpack(*packed)
-		if !reflect.DeepEqual(reg_data, unpacked) {
-			return empty_arr(), errors.New("failed to verify pack<->unpack round trip, there is a bug")
-		} else {
-			if file_cfg.verbose {
-				fmt.Println("\tVerify OK")
+		if file_cfg.verify {
+			unpacked := enc.unpack(*packed)
+			if !reflect.DeepEqual(reg_data, unpacked) {
+				return empty_arr(), errors.New("failed to verify pack<->unpack round trip, there is a bug")
+			} else {
+				if file_cfg.verbose {
+					fmt.Println("\tVerify OK")
+				}
 			}
 		}
 	}
@@ -382,14 +385,79 @@ func pack_file(input_path string, output_path string, file_cfg file_pack_cfg) er
 	return err
 }
 
+func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int) (int, error) {
+	cfg := file_pack_cfg{}
+	min_cachesize := -1
+	min_size := 1 * 1024 * 1024
+	for i := min_i; i <= max_i; i += step {
+		cfg.cache_size = i
+		cfg.verbose = false
+		packed_data, err := pack(ym_data, cfg)
+		if err != nil {
+			return 0, err
+		}
+
+		this_size := len(packed_data)
+		total_size := cfg.cache_size + this_size
+		fmt.Printf("Cache size: %d Packed size: %d Total RAM: %d\n",
+			i, this_size, total_size)
+
+		if total_size < min_size {
+			min_size = this_size
+			min_cachesize = i
+		}
+	}
+	return min_cachesize, nil
+}
+
+func minpack_file(input_path string, output_path string) error {
+	ym_data, err := load_ym_stream(input_path)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("---- Pass 1 ----")
+	min_cachesize, err := minpack_find_size(&ym_data, 1024, 16*1024, 1024)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("---- Pass 2 ----")
+	min_cachesize, err = minpack_find_size(&ym_data, min_cachesize-1024,
+		min_cachesize+1024, 128)
+	if err != nil {
+		return err
+	}
+
+	file_cfg := file_pack_cfg{}
+	file_cfg.verbose = false
+	file_cfg.cache_size = min_cachesize
+	packed_data, err := pack(&ym_data, file_cfg)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("---- Final output ----")
+	fmt.Printf("Original size: %d Packed size %d (%.2f%%) Total RAM %d\n",
+		ym_data.data_size, len(packed_data), percent(len(packed_data), ym_data.data_size),
+		file_cfg.cache_size+len(packed_data))
+
+	fmt.Printf("Needs a cache size of %d\n", min_cachesize)
+	err = os.WriteFile(output_path, packed_data, 0644)
+	return err
+}
+
 func main() {
 	packCmd := flag.NewFlagSet("pack", flag.ExitOnError)
 	packOptSize := packCmd.Int("cachesize", num_regs*512, "overall cache size in bytes")
 	packOptVerbose := packCmd.Bool("verbose", false, "verbose output")
+
 	unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
 
-	subcommands := []string{"pack", "unpack"}
-	flagsets := []*flag.FlagSet{packCmd, unpackCmd}
+	minpackCmd := flag.NewFlagSet("minpack", flag.ExitOnError)
+
+	subcommands := []string{"pack", "unpack", "minpack"}
+	flagsets := []*flag.FlagSet{packCmd, unpackCmd, minpackCmd}
 
 	usage := func() {
 		fmt.Println()
@@ -425,6 +493,21 @@ func main() {
 		}
 	}
 
+	minpack := func(args []string) {
+		minpackCmd.Parse(args)
+		files := minpackCmd.Args()
+		if len(files) != 2 {
+			fmt.Println("minpack: expected <input> <output> arguments")
+			usage()
+			os.Exit(1)
+		}
+		err := minpack_file(files[0], files[1])
+		if err != nil {
+			fmt.Println("Error in minpack_file", err.Error())
+			os.Exit(1)
+		}
+	}
+
 	// This all feels rather clunky...
 	switch os.Args[1] {
 	case packCmd.Name():
@@ -432,6 +515,8 @@ func main() {
 	case unpackCmd.Name():
 		fmt.Println("unpack not currently supported")
 		os.Exit(1)
+	case minpackCmd.Name():
+		minpack(os.Args[2:])
 	default:
 		fmt.Println("error: unknown subcommand")
 		usage()

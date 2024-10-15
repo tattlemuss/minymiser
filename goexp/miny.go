@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"reflect"
@@ -24,12 +25,6 @@ var register_names = [num_regs]string{
 	"Env period lo",
 	"Env period hi",
 	"Env shape"}
-
-func check(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
 
 func empty_arr() []byte {
 	return make([]byte, 0)
@@ -78,6 +73,18 @@ type encoder interface {
 
 	// Unpacks the given packed binary stream.
 	unpack(input []byte) []byte
+}
+
+// Describes packing config for a whole file
+type file_pack_cfg struct {
+	cache_size int
+	verbose    bool
+}
+
+// Describes packing config for a single register stream
+type stream_pack_cfg struct {
+	buffer_size int
+	verbose     bool
 }
 
 func add_literals(tokens []token, count int, pos int) []token {
@@ -138,7 +145,7 @@ func find_cheapest_match(enc encoder, data []byte, head int, distance int) match
 	return best_match
 }
 
-func pack_register_greedy(enc encoder, data []byte, buffer_size int) []byte {
+func pack_register_greedy(enc encoder, data []byte, cfg stream_pack_cfg) []byte {
 	var tokens []token
 
 	head := 0
@@ -147,7 +154,7 @@ func pack_register_greedy(enc encoder, data []byte, buffer_size int) []byte {
 
 	for head < len(data) {
 		//best := find_cheapest_match(enc, data, head, buffer_size)
-		best := find_longest_match(data, head, buffer_size)
+		best := find_longest_match(data, head, cfg.buffer_size)
 		if best.len != 0 {
 			head += best.len
 			tokens = append(tokens, token{true, best.len, best.off})
@@ -159,13 +166,14 @@ func pack_register_greedy(enc encoder, data []byte, buffer_size int) []byte {
 			lit_bytes++
 		}
 	}
-	fmt.Printf("\tGreedy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
-		percent(match_bytes, lit_bytes+match_bytes))
-
+	if cfg.verbose {
+		fmt.Printf("\tGreedy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
+			percent(match_bytes, lit_bytes+match_bytes))
+	}
 	return enc.encode(tokens, data)
 }
 
-func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size int) []byte {
+func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []byte {
 	var tokens []token
 
 	used_match := 0
@@ -177,6 +185,7 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size
 
 	var best0 match
 	var best1 match
+	buffer_size := cfg.buffer_size
 	for head < len(data) {
 		if use_cheapest {
 			best0 = find_cheapest_match(enc, data, head, buffer_size)
@@ -238,15 +247,18 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, buffer_size
 			match_bytes += best0.len
 		}
 	}
-	fmt.Printf("\tLazy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
-		percent(match_bytes, lit_bytes+match_bytes))
-	fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
-		"used second", used_second)
+
+	if cfg.verbose {
+		fmt.Printf("\tLazy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
+			percent(match_bytes, lit_bytes+match_bytes))
+		fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
+			"used second", used_second)
+	}
 	return enc.encode(tokens, data)
 }
 
 // Pack a YM3 data file and return an encoded array of bytes.
-func pack(data []byte) ([]byte, error) {
+func pack(data []byte, file_cfg file_pack_cfg) ([]byte, error) {
 	// check header
 	if data[0] != 'Y' ||
 		data[1] != 'M' ||
@@ -264,7 +276,10 @@ func pack(data []byte) ([]byte, error) {
 
 	// Compression settings
 	use_cheapest := false
-	buffer_size := 512
+
+	stream_cfg := stream_pack_cfg{}
+	stream_cfg.buffer_size = file_cfg.cache_size / num_regs
+	stream_cfg.verbose = file_cfg.verbose
 
 	//scale_deltas := make([]int, num_regs)
 	for reg := 0; reg < num_regs; reg++ {
@@ -272,27 +287,32 @@ func pack(data []byte) ([]byte, error) {
 		start_pos := 4 + reg*data_size_per_reg
 		reg_data := data[start_pos : start_pos+data_size_per_reg]
 
-		fmt.Println("Packing register", reg, register_names[reg])
+		if file_cfg.verbose {
+			fmt.Println("Packing register", reg, register_names[reg])
+		}
 		// Pack
 		enc := encoder_v1{0}
-		greedy := pack_register_greedy(&enc, reg_data, buffer_size)
+		greedy := pack_register_greedy(&enc, reg_data, stream_cfg)
 		packed := &all_data[reg].data
-		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, buffer_size)
+		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, stream_cfg)
 
 		// Experiment to gauge how much a stream benefits from the larger buffer size
 		//scale_test := pack_register_lazy(&enc, reg_data, use_cheapest, 128)
 		//scale_deltas[reg] = len(scale_test) - len(*packed)
 		//fmt.Printf("\t **** Scale delta %d\n", scale_deltas[reg])
-
-		fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
-			len(*packed), len(greedy), len(greedy)-len(*packed))
+		if file_cfg.verbose {
+			fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
+				len(*packed), len(greedy), len(greedy)-len(*packed))
+		}
 
 		// Verify by unpacking
 		unpacked := enc.unpack(*packed)
 		if !reflect.DeepEqual(reg_data, unpacked) {
 			return empty_arr(), errors.New("failed to verify pack<->unpack round trip, there is a bug")
 		} else {
-			fmt.Println("\tVerify OK")
+			if file_cfg.verbose {
+				fmt.Println("\tVerify OK")
+			}
 		}
 	}
 
@@ -317,20 +337,78 @@ func pack(data []byte) ([]byte, error) {
 	return output_data, nil
 }
 
-func main() {
-	argsWithoutProg := os.Args[1:]
-	if len(argsWithoutProg) < 2 {
-		panic("usage: <inputfile> <outputfile>")
+func pack_file(input_path string, output_path string, file_cfg file_pack_cfg) error {
+	dat, err := os.ReadFile(input_path)
+	if err != nil {
+		return err
 	}
 
-	dat, err := os.ReadFile(argsWithoutProg[0])
-	check(err)
+	packed_data, err := pack(dat, file_cfg)
+	if err != nil {
+		return err
+	}
 
-	packed_data, err := pack(dat)
-	check(err)
-	fmt.Printf("Original size: %d Packed size %d (%.2f%%)",
-		len(dat), len(packed_data), percent(len(packed_data), len(dat)))
+	fmt.Printf("Original size: %d Packed size %d (%.2f%%) Total RAM %d",
+		len(dat), len(packed_data), percent(len(packed_data), len(dat)),
+		file_cfg.cache_size+len(packed_data))
 
-	err = os.WriteFile(argsWithoutProg[1], packed_data, 0644)
-	check(err)
+	err = os.WriteFile(output_path, packed_data, 0644)
+	return err
+}
+
+func main() {
+	packCmd := flag.NewFlagSet("pack", flag.ExitOnError)
+	packOptSize := packCmd.Int("cachesize", num_regs*512, "overall cache size in bytes")
+	packOptVerbose := packCmd.Bool("verbose", false, "verbose output")
+	unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
+
+	subcommands := []string{"pack", "unpack"}
+	flagsets := []*flag.FlagSet{packCmd, unpackCmd}
+
+	usage := func() {
+		fmt.Println()
+		fmt.Println("usage: miny <subcommand> [arguments]")
+		fmt.Println("  where <subcommand> is one of", subcommands)
+		fmt.Println()
+		for _, fs := range flagsets {
+			fs.Usage()
+		}
+	}
+
+	if len(os.Args) < 2 {
+		fmt.Println("error: expected a subcommand, one of", subcommands)
+		usage()
+		os.Exit(1)
+	}
+
+	pack := func(args []string) {
+		packCmd.Parse(args)
+		files := packCmd.Args()
+		if len(files) != 2 {
+			fmt.Println("pack: expected <input> <output> arguments")
+			usage()
+			os.Exit(1)
+		}
+		cfg := file_pack_cfg{}
+		cfg.cache_size = *packOptSize
+		cfg.verbose = *packOptVerbose
+		err := pack_file(files[0], files[1], cfg)
+		if err != nil {
+			fmt.Println("Error in pack_file", err.Error())
+			os.Exit(1)
+		}
+	}
+
+	// This all feels rather clunky...
+	switch os.Args[1] {
+	case packCmd.Name():
+		pack(os.Args[2:])
+	case unpackCmd.Name():
+		fmt.Println("unpack not currently supported")
+		os.Exit(1)
+	default:
+		fmt.Println("error: unknown subcommand")
+		usage()
+		os.Exit(1)
+	}
 }

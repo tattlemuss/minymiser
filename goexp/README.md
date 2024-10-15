@@ -6,4 +6,4 @@ Building
 * Download and run the Go installer
 * `go build`
 * This should produce a `miny` executable.
-* Command-line is of the form `miny <infile> <outfile>`
+* Command-line is of the form `miny pack <infile> <outfile>`

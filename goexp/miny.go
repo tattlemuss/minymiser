@@ -26,6 +26,8 @@ var register_names = [num_regs]string{
 	"Env period hi",
 	"Env shape"}
 
+var ym3_header = []byte{'Y', 'M', '3', '!'}
+
 func empty_arr() []byte {
 	return make([]byte, 0)
 }
@@ -268,10 +270,7 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_
 
 func create_ym_streams(data []byte) (ym_streams, error) {
 	// check header
-	if data[0] != 'Y' ||
-		data[1] != 'M' ||
-		data[2] != '3' ||
-		data[3] != '!' {
+	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3_header) {
 		return ym_streams{}, errors.New("not a YM3 file")
 	}
 

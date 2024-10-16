@@ -384,26 +384,46 @@ func pack_file(input_path string, output_path string, file_cfg file_pack_cfg) er
 	return err
 }
 
+type minpack_result struct {
+	cachesize  int
+	packedsize int
+}
+
 func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int) (int, error) {
-	cfg := file_pack_cfg{}
+	messages := make(chan minpack_result, 5)
+
+	// Async func to pack the file and return sizes
+	find_packed_size_func := func(ym_data *ym_streams, cfg file_pack_cfg) {
+		packed_data, err := pack(ym_data, cfg)
+		if err != nil {
+			messages <- minpack_result{0, 0}
+		} else {
+			messages <- minpack_result{cfg.cache_size, len(packed_data)}
+		}
+	}
+
+	// Launch the async packers
+	for i := min_i; i <= max_i; i += step {
+		cfg := file_pack_cfg{}
+		cfg.cache_size = i
+		cfg.verbose = false
+		go find_packed_size_func(ym_data, cfg)
+	}
+
+	// Receive results and find the smallest
 	min_cachesize := -1
 	min_size := 1 * 1024 * 1024
 	for i := min_i; i <= max_i; i += step {
-		cfg.cache_size = i
-		cfg.verbose = false
-		packed_data, err := pack(ym_data, cfg)
-		if err != nil {
-			return 0, err
-		}
+		msg := <-messages
 
-		this_size := len(packed_data)
-		total_size := cfg.cache_size + this_size
-		fmt.Printf("Cache size: %d Packed size: %d Total RAM: %d\n",
-			i, this_size, total_size)
+		this_size := msg.packedsize
+		total_size := msg.cachesize + this_size
+		fmt.Printf("Cache size: %d Packed size: %d Total size: %d\n",
+			msg.cachesize, this_size, total_size)
 
 		if total_size < min_size {
-			min_size = this_size
-			min_cachesize = i
+			min_size = total_size
+			min_cachesize = msg.cachesize
 		}
 	}
 	return min_cachesize, nil

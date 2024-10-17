@@ -4,6 +4,7 @@
 name: Go
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "master" ]
   pull_request:
@@ -25,5 +26,7 @@ jobs:
       run: |
         cd goexp
         go build -v .
+        GOOS=windows GOARCH=amd64 go build -v .
+        ls -l
 
 

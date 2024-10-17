@@ -31,4 +31,8 @@ jobs:
         GOOS=darwin  GOARCH=arm64 go build -o bin/miny-arm64-darwin .
         ls -l
 
-
+    - name: "Upload artifacts"
+      uses: actions/upload-artifact@v2
+      with:
+        name: miny-${{ github.sha }}
+        path: bin/*

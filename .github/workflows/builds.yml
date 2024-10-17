@@ -25,8 +25,10 @@ jobs:
     - name: Build
       run: |
         cd goexp
-        go build -v .
-        GOOS=windows GOARCH=amd64 go build -v .
+        mkdir bin
+        GOOS=windows GOARCH=amd64 go build -o bin/miny-amd64-win.exe .
+        GOOS=darwin  GOARCH=amd64 go build -o bin/miny-amd64-darwin .
+        GOOS=darwin  GOARCH=arm64 go build -o bin/miny-arm64-darwin .
         ls -l
 
 

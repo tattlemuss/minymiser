@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+
+	"github.com/wcharczuk/go-chart/v2" //exposes "chart"
 )
 
 const num_regs = 14
@@ -389,7 +391,7 @@ type minpack_result struct {
 	packedsize int
 }
 
-func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int) (int, error) {
+func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phase string) (int, error) {
 	messages := make(chan minpack_result, 5)
 
 	// Async func to pack the file and return sizes
@@ -411,6 +413,9 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int) (int
 	}
 
 	// Receive results and find the smallest
+	xvals := make([]float64, 0)
+	yvals := make([]float64, 0)
+
 	min_cachesize := -1
 	min_size := 1 * 1024 * 1024
 	for i := min_i; i <= max_i; i += step {
@@ -425,7 +430,30 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int) (int
 			min_size = total_size
 			min_cachesize = msg.cachesize
 		}
+
+		xvals = append(xvals, float64(i))
+		yvals = append(yvals, float64(total_size))
 	}
+
+	graph := chart.Chart{
+		Series: []chart.Series{
+			chart.ContinuousSeries{
+				Style: chart.Style{
+					DotWidth: 3,
+				},
+				XValues: xvals,
+				YValues: yvals,
+			},
+		},
+	}
+
+	fh, _ := os.Create(phase + ".svg")
+	err := graph.Render(chart.SVG, fh)
+	if err != nil {
+		return 0, nil
+	}
+	fh.Close()
+
 	return min_cachesize, nil
 }
 
@@ -436,14 +464,14 @@ func minpack_file(input_path string, output_path string) error {
 	}
 
 	fmt.Println("---- Pass 1 ----")
-	min_cachesize, err := minpack_find_size(&ym_data, 1024, 16*1024, 1024)
+	min_cachesize, err := minpack_find_size(&ym_data, 1024, 16*1024, 128, "broad")
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("---- Pass 2 ----")
 	min_cachesize, err = minpack_find_size(&ym_data, min_cachesize-1024,
-		min_cachesize+1024, 128)
+		min_cachesize+1024, 128, "narrow")
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,6 @@
 module miny/miny
 
-go 1.20
+go 1.19
 
 require github.com/wcharczuk/go-chart/v2 v2.1.2
 

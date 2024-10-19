@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-
-	"github.com/wcharczuk/go-chart/v2" //exposes "chart"
 )
 
 const num_regs = 14
@@ -413,8 +411,7 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 	}
 
 	// Receive results and find the smallest
-	xvals := make([]float64, 0)
-	yvals := make([]float64, 0)
+	size_map := make(map[int]int)
 
 	min_cachesize := -1
 	min_size := 1 * 1024 * 1024
@@ -431,29 +428,10 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 			min_cachesize = msg.cachesize
 		}
 
-		xvals = append(xvals, float64(i))
-		yvals = append(yvals, float64(total_size))
+		size_map[msg.cachesize/num_regs] = total_size
 	}
 
-	graph := chart.Chart{
-		Series: []chart.Series{
-			chart.ContinuousSeries{
-				Style: chart.Style{
-					DotWidth: 3,
-				},
-				XValues: xvals,
-				YValues: yvals,
-			},
-		},
-	}
-
-	fh, _ := os.Create(phase + ".svg")
-	err := graph.Render(chart.SVG, fh)
-	if err != nil {
-		return 0, nil
-	}
-	fh.Close()
-
+	scatter_int_map(phase+".svg", size_map)
 	return min_cachesize, nil
 }
 
@@ -464,7 +442,7 @@ func minpack_file(input_path string, output_path string) error {
 	}
 
 	fmt.Println("---- Pass 1 ----")
-	min_cachesize, err := minpack_find_size(&ym_data, 1024, 16*1024, 128, "broad")
+	min_cachesize, err := minpack_find_size(&ym_data, 1024, 16*1024, 512, "broad")
 	if err != nil {
 		return err
 	}

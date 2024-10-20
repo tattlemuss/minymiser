@@ -90,6 +90,7 @@ type file_pack_cfg struct {
 	cache_size int // cache size for whole file
 	verbose    bool
 	verify     bool
+	encoder    int // 1 or 2
 }
 
 // Describes packing config for a single register stream
@@ -306,10 +307,17 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 			fmt.Println("Packing register", reg, register_names[reg])
 		}
 		// Pack
-		enc := encoder_v1{0}
+		var enc encoder
+		if file_cfg.encoder == 1 {
+			enc = &encoder_v1{0}
+		} else if file_cfg.encoder == 2 {
+			enc = &encoder_v2{0}
+		} else {
+			return empty_arr(), fmt.Errorf("unknown encoder ID: (%d)", file_cfg.encoder)
+		}
 		reg_data := ym_data.register[reg].data
 		packed := &packed_streams[reg].data
-		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, stream_cfg)
+		*packed = pack_register_lazy(enc, reg_data, use_cheapest, stream_cfg)
 
 		// Experiment to gauge how much a stream benefits from the larger buffer size
 		//scale_test := pack_register_lazy(&enc, reg_data, use_cheapest, 128)
@@ -451,6 +459,7 @@ func minpack_file(input_path string, output_path string) error {
 	file_cfg := file_pack_cfg{}
 	file_cfg.verbose = false
 	file_cfg.cache_size = min_cachesize
+	file_cfg.encoder = 2
 	packed_data, err := pack(&ym_data, file_cfg)
 	if err != nil {
 		return err
@@ -470,6 +479,7 @@ func main() {
 	packCmd := flag.NewFlagSet("pack", flag.ExitOnError)
 	packOptSize := packCmd.Int("cachesize", num_regs*512, "overall cache size in bytes")
 	packOptVerbose := packCmd.Bool("verbose", false, "verbose output")
+	packOptEncoder := packCmd.Int("encoder", 1, "encoder version (1|2)")
 
 	unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
 
@@ -505,6 +515,7 @@ func main() {
 		cfg := file_pack_cfg{}
 		cfg.cache_size = *packOptSize
 		cfg.verbose = *packOptVerbose
+		cfg.encoder = *packOptEncoder
 		err := pack_file(files[0], files[1], cfg)
 		if err != nil {
 			fmt.Println("Error in pack_file", err.Error())

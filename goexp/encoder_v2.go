@@ -15,7 +15,7 @@ type encoder_v2 struct {
 	Match count encoding:
 	| llll | oooo |
 	top nybble   0-0xe 	-- start length. If 0x0, fetch byte, If 0x0,0x0, fetch word
-	lower nybble 0-0xf	-- start offset. If 0x0, subtract 0xe and use 0-prefix
+	lower nybble 0-0xf	-- start offset. If 0x0, use 0-prefix
 
 	Literal count encoding:
 	| 1111 | llll |
@@ -115,7 +115,7 @@ func (e *encoder_v2) encode(tokens []token, input []byte) []byte {
 				start_len = byte(t.len)
 			}
 			if t.off <= 0xf {
-				start_off = byte(t.len)
+				start_off = byte(t.off)
 			}
 			output = append(output, start_len<<4|start_off)
 			// Now rest of length
@@ -185,8 +185,8 @@ func (e *encoder_v2) unpack(input []byte) []byte {
 					head++
 				}
 				off += int(input[head])
+				head++
 			}
-			head++
 			match_pos := len(output) - off
 			for count > 0 {
 				output = append(output, output[match_pos])

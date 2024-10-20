@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestEncV2(t *testing.T) {
 	var costs = []struct {
@@ -26,18 +29,23 @@ func TestEncV2(t *testing.T) {
 		}
 
 		if tt.lit != 0 {
-			ans := e.lit_cost(tt.lit)
-			if ans != tt.want {
-				t.Errorf("lit_cost failure: got %d, want %d", ans, tt.want)
-			}
+			testname := fmt.Sprintf("lit_cost %d", tt.lit)
+			t.Run(testname, func(t *testing.T) {
+				ans := e.lit_cost(tt.lit)
+				if ans != tt.want {
+					t.Errorf("lit_cost failure: got %d, want %d", ans, tt.want)
+				}
+			})
 		}
 		if tt.matchlen != 0 {
-			m := match{tt.matchlen, tt.matchoff}
-			ans := e.match_cost(m)
-			if ans != tt.want {
-				t.Errorf("lit_cost failure: got %d, want %d", ans, tt.want)
-			}
+			testname := fmt.Sprintf("match_cost %d,%d", tt.matchlen, tt.matchoff)
+			t.Run(testname, func(t *testing.T) {
+				m := match{tt.matchlen, tt.matchoff}
+				ans := e.match_cost(m)
+				if ans != tt.want {
+					t.Errorf("match_cost failure: got %d, want %d", ans, tt.want)
+				}
+			})
 		}
-
 	}
 }

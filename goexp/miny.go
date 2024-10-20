@@ -6,24 +6,19 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 )
 
 const num_regs = 14
 
 var register_names = [num_regs]string{
-	"A period lo",
-	"A period hi",
-	"B period lo",
-	"B period hi",
-	"C period lo",
-	"C period hi",
+	"A period lo", "A period hi",
+	"B period lo", "B period hi",
+	"C period lo", "C period hi",
 	"Noise period",
 	"Mixer",
-	"A volume",
-	"B volume",
-	"C volume",
-	"Env period lo",
-	"Env period hi",
+	"A volume", "B volume", "C volume",
+	"Env period lo", "Env period hi",
 	"Env shape"}
 
 var ym3_header = []byte{'Y', 'M', '3', '!'}
@@ -65,7 +60,7 @@ type packedstream struct {
 type ym_streams struct {
 	// A binary array for each register to pack
 	register  [num_regs]packedstream
-	num_vbls  int
+	num_vbls  int // size of each packedstream
 	data_size int
 }
 
@@ -106,6 +101,28 @@ func add_literals(tokens []token, count int, pos int) []token {
 		return append(tokens, token{false, count, pos})
 	}
 	return tokens
+}
+
+type usage_map struct {
+	counts []int // number of backrefs
+}
+
+func analyse_usages(data []byte, um *usage_map) {
+	last_usage := [256]int{}
+	for i := range last_usage {
+		last_usage[i] = -1
+	}
+
+	for i := range data {
+		val := data[i]
+		if last_usage[val] >= 0 {
+			distance := i - last_usage[val]
+			if distance >= 3 && distance < len(um.counts) {
+				um.counts[distance]++
+			}
+		}
+		last_usage[val] = i
+	}
 }
 
 func find_longest_match(data []byte, head int, distance int) match {
@@ -184,7 +201,7 @@ func pack_register_greedy(enc encoder, data []byte, cfg stream_pack_cfg) []byte 
 	return enc.encode(tokens, data)
 }
 
-func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []byte {
+func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []token {
 	var tokens []token
 
 	used_match := 0
@@ -265,7 +282,8 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_
 		fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
 			"used second", used_second)
 	}
-	return enc.encode(tokens, data)
+
+	return tokens
 }
 
 func create_ym_streams(data []byte) (ym_streams, error) {
@@ -291,6 +309,22 @@ func create_ym_streams(data []byte) (ym_streams, error) {
 	return ym3, nil
 }
 
+func sorti(keys []int) []int {
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+func histo(name string, vals []int) {
+	for i := 10; i < 100; i += 5 {
+		pos := i * len(vals) / 100
+		fmt.Printf("%4v ", vals[pos])
+	}
+	fmt.Printf("%4d ", uint(vals[len(vals)-1]))
+	fmt.Println("<--" + name)
+}
+
 // Pack a YM3 data file and return an encoded array of bytes.
 func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	// Compression settings
@@ -301,6 +335,18 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	stream_cfg.verbose = file_cfg.verbose
 	packed_streams := make([]packedstream, num_regs)
 
+	um := usage_map{}
+	um.counts = make([]int, 1024)
+	len_map := make(map[int]int)
+	dist_map := make(map[int]int)
+	x := make([]float64, 0)
+	y := make([]float64, 0)
+	offs := make([]int, 0)
+	lens := make([]int, 0)
+	litlens := make([]int, 0)
+	num_matches := 0
+	num_tokens := 0
+
 	for reg := 0; reg < num_regs; reg++ {
 		if file_cfg.verbose {
 			fmt.Println("Packing register", reg, register_names[reg])
@@ -309,17 +355,30 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		enc := encoder_v1{0}
 		reg_data := ym_data.register[reg].data
 		packed := &packed_streams[reg].data
-		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, stream_cfg)
 
-		// Experiment to gauge how much a stream benefits from the larger buffer size
-		//scale_test := pack_register_lazy(&enc, reg_data, use_cheapest, 128)
-		//scale_deltas[reg] = len(scale_test) - len(*packed)
-		//fmt.Printf("\t **** Scale delta %d\n", scale_deltas[reg])
-		//greedy := pack_register_greedy(&enc, reg_data, stream_cfg)
-		//if file_cfg.verbose {
-		//	fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
-		//		len(*packed), len(greedy), len(greedy)-len(*packed))
-		//}
+		analyse_usages(reg_data, &um)
+		tokens := pack_register_lazy(enc, reg_data, use_cheapest, stream_cfg)
+		*packed = enc.encode(tokens, reg_data)
+
+		// Graph histogram
+		for i := range tokens {
+			t := &tokens[i]
+			if t.is_match {
+				if t.len < 512 {
+					len_map[t.len]++
+				}
+				dist_map[t.off]++
+				offs = append(offs, t.off)
+				lens = append(lens, t.len)
+				//litlens = append(litlens, 0)
+				x = append(x, float64(t.off))
+				y = append(y, float64(t.len))
+				num_matches++
+			} else {
+				litlens = append(litlens, t.len)
+			}
+		}
+		num_tokens += len(tokens)
 
 		// Verify by unpacking
 		if file_cfg.verify {
@@ -333,6 +392,19 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 			}
 		}
 	}
+	scatter_int_map("len.svg", len_map)
+	scatter_int_map("off.svg", dist_map)
+	xy_plot("scatter.svg", x, y)
+
+	linegraph_int("usage.svg", um.counts)
+	lens = sorti(lens)
+	litlens = sorti(litlens)
+	offs = sorti(offs)
+	histo("Lens", lens)
+	histo("Offs", offs)
+	histo("LitLens", litlens)
+	fmt.Printf("Lits: %d Matches: %d (%.2f%%)\n", num_tokens-num_matches,
+		num_matches, percent(num_matches, num_tokens))
 
 	// Generate the final data
 	output_data := make([]byte, 0)
@@ -428,7 +500,7 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 			min_cachesize = msg.cachesize
 		}
 
-		size_map[msg.cachesize/num_regs] = total_size
+		size_map[msg.cachesize/num_regs] = this_size //total_size
 	}
 
 	scatter_int_map(phase+".svg", size_map)

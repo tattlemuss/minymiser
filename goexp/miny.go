@@ -404,6 +404,7 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int) (int
 	find_packed_size_func := func(ym_data *ym_streams, cfg file_pack_cfg) {
 		packed_data, err := pack(ym_data, cfg)
 		if err != nil {
+			fmt.Println(err)
 			messages <- minpack_result{0, 0}
 		} else {
 			messages <- minpack_result{cfg.cache_size, len(packed_data)}
@@ -415,6 +416,7 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int) (int
 		cfg := file_pack_cfg{}
 		cfg.cache_size = i
 		cfg.verbose = false
+		cfg.encoder = 1
 		go find_packed_size_func(ym_data, cfg)
 	}
 

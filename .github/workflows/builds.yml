@@ -1,0 +1,38 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Go
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: Build
+      run: |
+        cd goexp
+        mkdir bin
+        GOOS=windows GOARCH=amd64 go build -o bin/miny-amd64-win.exe .
+        GOOS=darwin  GOARCH=amd64 go build -o bin/miny-amd64-darwin .
+        GOOS=darwin  GOARCH=arm64 go build -o bin/miny-arm64-darwin .
+        ls -l
+
+    - name: "Upload artifacts"
+      uses: actions/upload-artifact@v4
+      with:
+        name: miny-${{ github.sha }}
+        path: goexp/bin/*

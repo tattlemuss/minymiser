@@ -51,7 +51,6 @@ modplay_loop:
 	or.w	#$0700,sr			;disable interrupts
 	move.l	$114.w,old_c
 	move.l	#c_routine,$114.w
-	move.b	#%1000000,$17(a0)		; irq vector register (automat. eoi)
 	clr.b	$484.w
 	move.w	#$2300,sr			; interrupts on
 

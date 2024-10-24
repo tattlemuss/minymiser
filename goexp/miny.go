@@ -494,6 +494,57 @@ func minpack_file(input_path string, output_path string) error {
 	return err
 }
 
+func stats_file(input_path string) error {
+	ym_data, err := load_ym_stream(input_path)
+	if err != nil {
+		return err
+	}
+
+	csv, err := os.Create("sizes.csv")
+	min_total := make([]int, num_regs)
+	min_cache := make([]int, num_regs)
+	for reg := 0; reg < num_regs; reg++ {
+		fmt.Fprintf(csv, "Reg %d %s,", reg, register_names[reg])
+		min := 9999999
+		mcache := min
+		for size := 32; size < 1024; size += 32 {
+			// Pack
+			enc := encoder_v1{0}
+			reg_data := ym_data.register[reg].data
+			var cfg stream_pack_cfg
+			cfg.buffer_size = size
+			cfg.verbose = false
+
+			packed := pack_register_lazy(&enc, reg_data, true, cfg)
+
+			total := (len(packed) + size)
+			fmt.Fprintf(csv, "%d,", total)
+			if total < min {
+				min = total
+				mcache = size
+			}
+			fmt.Fprintf(csv, "%d,", total)
+		}
+		fmt.Fprintf(csv, "\n")
+		min_total[reg] = min
+		min_cache[reg] = mcache
+	}
+
+	fmt.Fprintf(csv, "\nBest sizes per register\n")
+	best_total_size := 0
+	best_cache_size := 0
+	for reg := 0; reg < num_regs; reg++ {
+		fmt.Fprintf(csv, "Reg %d %s,", reg, register_names[reg])
+		fmt.Fprintf(csv, "%d,%d\n", min_total[reg], min_cache[reg])
+		best_total_size += min_total[reg]
+		best_cache_size += min_cache[reg]
+	}
+	fmt.Fprintf(csv, "\nBest total sizes,%d,%d\n", best_total_size, best_cache_size)
+
+	csv.Close()
+	return nil
+}
+
 func main() {
 	packCmd := flag.NewFlagSet("pack", flag.ExitOnError)
 	packOptSize := packCmd.Int("cachesize", num_regs*512, "overall cache size in bytes")
@@ -564,6 +615,8 @@ func main() {
 		os.Exit(1)
 	case minpackCmd.Name():
 		minpack(os.Args[2:])
+	case "stats":
+		stats_file(os.Args[2])
 	default:
 		fmt.Println("error: unknown subcommand")
 		usage()

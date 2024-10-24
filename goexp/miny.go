@@ -6,26 +6,19 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-
-	"github.com/wcharczuk/go-chart/v2" //exposes "chart"
+	"sort"
 )
 
 const num_regs = 14
 
 var register_names = [num_regs]string{
-	"A period lo",
-	"A period hi",
-	"B period lo",
-	"B period hi",
-	"C period lo",
-	"C period hi",
+	"A period lo", "A period hi",
+	"B period lo", "B period hi",
+	"C period lo", "C period hi",
 	"Noise period",
 	"Mixer",
-	"A volume",
-	"B volume",
-	"C volume",
-	"Env period lo",
-	"Env period hi",
+	"A volume", "B volume", "C volume",
+	"Env period lo", "Env period hi",
 	"Env shape"}
 
 var ym3_header = []byte{'Y', 'M', '3', '!'}
@@ -67,7 +60,7 @@ type packedstream struct {
 type ym_streams struct {
 	// A binary array for each register to pack
 	register  [num_regs]packedstream
-	num_vbls  int
+	num_vbls  int // size of each packedstream
 	data_size int
 }
 
@@ -92,6 +85,7 @@ type file_pack_cfg struct {
 	cache_size int // cache size for whole file
 	verbose    bool
 	verify     bool
+	encoder    int // 1 or 2
 }
 
 // Describes packing config for a single register stream
@@ -108,6 +102,28 @@ func add_literals(tokens []token, count int, pos int) []token {
 		return append(tokens, token{false, count, pos})
 	}
 	return tokens
+}
+
+type usage_map struct {
+	counts []int // number of backrefs
+}
+
+func analyse_usages(data []byte, um *usage_map) {
+	last_usage := [256]int{}
+	for i := range last_usage {
+		last_usage[i] = -1
+	}
+
+	for i := range data {
+		val := data[i]
+		if last_usage[val] >= 0 {
+			distance := i - last_usage[val]
+			if distance >= 3 && distance < len(um.counts) {
+				um.counts[distance]++
+			}
+		}
+		last_usage[val] = i
+	}
 }
 
 func find_longest_match(data []byte, head int, distance int) match {
@@ -186,7 +202,7 @@ func pack_register_greedy(enc encoder, data []byte, cfg stream_pack_cfg) []byte 
 	return enc.encode(tokens, data)
 }
 
-func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []byte {
+func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []token {
 	var tokens []token
 
 	used_match := 0
@@ -267,7 +283,8 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_
 		fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
 			"used second", used_second)
 	}
-	return enc.encode(tokens, data)
+
+	return tokens
 }
 
 func create_ym_streams(data []byte) (ym_streams, error) {
@@ -293,6 +310,22 @@ func create_ym_streams(data []byte) (ym_streams, error) {
 	return ym3, nil
 }
 
+func sorti(keys []int) []int {
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+func histo(name string, vals []int) {
+	for i := 10; i < 100; i += 5 {
+		pos := i * len(vals) / 100
+		fmt.Printf("%4v ", vals[pos])
+	}
+	fmt.Printf("%4d ", uint(vals[len(vals)-1]))
+	fmt.Println("<--" + name)
+}
+
 // Pack a YM3 data file and return an encoded array of bytes.
 func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	// Compression settings
@@ -303,25 +336,57 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	stream_cfg.verbose = file_cfg.verbose
 	packed_streams := make([]packedstream, num_regs)
 
+	um := usage_map{}
+	um.counts = make([]int, 1024)
+	len_map := make(map[int]int)
+	dist_map := make(map[int]int)
+	x := make([]float64, 0)
+	y := make([]float64, 0)
+	offs := make([]int, 0)
+	lens := make([]int, 0)
+	litlens := make([]int, 0)
+	num_matches := 0
+	num_tokens := 0
+
 	for reg := 0; reg < num_regs; reg++ {
 		if file_cfg.verbose {
 			fmt.Println("Packing register", reg, register_names[reg])
 		}
 		// Pack
-		enc := encoder_v1{0}
+		var enc encoder
+		if file_cfg.encoder == 1 {
+			enc = &encoder_v1{0}
+		} else if file_cfg.encoder == 2 {
+			enc = &encoder_v2{0}
+		} else {
+			return empty_arr(), fmt.Errorf("unknown encoder ID: (%d)", file_cfg.encoder)
+		}
 		reg_data := ym_data.register[reg].data
 		packed := &packed_streams[reg].data
-		*packed = pack_register_lazy(&enc, reg_data, use_cheapest, stream_cfg)
 
-		// Experiment to gauge how much a stream benefits from the larger buffer size
-		//scale_test := pack_register_lazy(&enc, reg_data, use_cheapest, 128)
-		//scale_deltas[reg] = len(scale_test) - len(*packed)
-		//fmt.Printf("\t **** Scale delta %d\n", scale_deltas[reg])
-		//greedy := pack_register_greedy(&enc, reg_data, stream_cfg)
-		//if file_cfg.verbose {
-		//	fmt.Printf("\tLazy size %v Greedy size %v (%+d)\n",
-		//		len(*packed), len(greedy), len(greedy)-len(*packed))
-		//}
+		analyse_usages(reg_data, &um)
+		tokens := pack_register_lazy(enc, reg_data, use_cheapest, stream_cfg)
+		*packed = enc.encode(tokens, reg_data)
+
+		// Graph histogram
+		for i := range tokens {
+			t := &tokens[i]
+			if t.is_match {
+				if t.len < 512 {
+					len_map[t.len]++
+				}
+				dist_map[t.off]++
+				offs = append(offs, t.off)
+				lens = append(lens, t.len)
+				//litlens = append(litlens, 0)
+				x = append(x, float64(t.off))
+				y = append(y, float64(t.len))
+				num_matches++
+			} else {
+				litlens = append(litlens, t.len)
+			}
+		}
+		num_tokens += len(tokens)
 
 		// Verify by unpacking
 		if file_cfg.verify {
@@ -335,6 +400,19 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 			}
 		}
 	}
+	scatter_int_map("len.svg", len_map)
+	scatter_int_map("off.svg", dist_map)
+	xy_plot("scatter.svg", x, y)
+
+	linegraph_int("usage.svg", um.counts)
+	lens = sorti(lens)
+	litlens = sorti(litlens)
+	offs = sorti(offs)
+	histo("Lens", lens)
+	histo("Offs", offs)
+	histo("LitLens", litlens)
+	fmt.Printf("Lits: %d Matches: %d (%.2f%%)\n", num_tokens-num_matches,
+		num_matches, percent(num_matches, num_tokens))
 
 	// Generate the final data
 	output_data := make([]byte, 0)
@@ -398,6 +476,7 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 	find_packed_size_func := func(ym_data *ym_streams, cfg file_pack_cfg) {
 		packed_data, err := pack(ym_data, cfg)
 		if err != nil {
+			fmt.Println(err)
 			messages <- minpack_result{0, 0}
 		} else {
 			messages <- minpack_result{cfg.cache_size, len(packed_data)}
@@ -409,12 +488,12 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 		cfg := file_pack_cfg{}
 		cfg.cache_size = i
 		cfg.verbose = false
+		cfg.encoder = 1
 		go find_packed_size_func(ym_data, cfg)
 	}
 
 	// Receive results and find the smallest
-	xvals := make([]float64, 0)
-	yvals := make([]float64, 0)
+	size_map := make(map[int]int)
 
 	min_cachesize := -1
 	min_size := 1 * 1024 * 1024
@@ -431,29 +510,10 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 			min_cachesize = msg.cachesize
 		}
 
-		xvals = append(xvals, float64(i))
-		yvals = append(yvals, float64(total_size))
+		size_map[msg.cachesize/num_regs] = this_size //total_size
 	}
 
-	graph := chart.Chart{
-		Series: []chart.Series{
-			chart.ContinuousSeries{
-				Style: chart.Style{
-					DotWidth: 3,
-				},
-				XValues: xvals,
-				YValues: yvals,
-			},
-		},
-	}
-
-	fh, _ := os.Create(phase + ".svg")
-	err := graph.Render(chart.SVG, fh)
-	if err != nil {
-		return 0, nil
-	}
-	fh.Close()
-
+	scatter_int_map(phase+".svg", size_map)
 	return min_cachesize, nil
 }
 
@@ -464,7 +524,7 @@ func minpack_file(input_path string, output_path string) error {
 	}
 
 	fmt.Println("---- Pass 1 ----")
-	min_cachesize, err := minpack_find_size(&ym_data, 1024, 16*1024, 128, "broad")
+	min_cachesize, err := minpack_find_size(&ym_data, 1024, 16*1024, 512, "broad")
 	if err != nil {
 		return err
 	}
@@ -479,6 +539,7 @@ func minpack_file(input_path string, output_path string) error {
 	file_cfg := file_pack_cfg{}
 	file_cfg.verbose = false
 	file_cfg.cache_size = min_cachesize
+	file_cfg.encoder = 2
 	packed_data, err := pack(&ym_data, file_cfg)
 	if err != nil {
 		return err
@@ -549,6 +610,7 @@ func main() {
 	packCmd := flag.NewFlagSet("pack", flag.ExitOnError)
 	packOptSize := packCmd.Int("cachesize", num_regs*512, "overall cache size in bytes")
 	packOptVerbose := packCmd.Bool("verbose", false, "verbose output")
+	packOptEncoder := packCmd.Int("encoder", 1, "encoder version (1|2)")
 
 	unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
 
@@ -584,6 +646,7 @@ func main() {
 		cfg := file_pack_cfg{}
 		cfg.cache_size = *packOptSize
 		cfg.verbose = *packOptVerbose
+		cfg.encoder = *packOptEncoder
 		err := pack_file(files[0], files[1], cfg)
 		if err != nil {
 			fmt.Println("Error in pack_file", err.Error())

@@ -561,6 +561,28 @@ type reg_stats struct {
 	total_size int
 }
 
+type packing_stats struct {
+	sizes map[int]([]int)
+}
+
+func find_smallest(stats *packing_stats, regs []reg_stats) (int, int) {
+	min_total := 99999999999
+	min_index := -1
+
+	for key := range stats.sizes {
+		// Create total cost
+		total_cost := 0
+		for j := range regs {
+			total_cost += stats.sizes[key][regs[j].reg]
+		}
+		if total_cost < min_total {
+			min_total = total_cost
+			min_index = key
+		}
+	}
+	return min_index, min_total
+}
+
 func stats_file(input_path string) error {
 	ym_data, err := load_ym_stream(input_path)
 	if err != nil {
@@ -568,39 +590,54 @@ func stats_file(input_path string) error {
 	}
 
 	csv, err := os.Create("sizes.csv")
-	stats_for_regs := make([]reg_stats, num_regs)
+	if err != nil {
+		return err
+	}
+	stats := packing_stats{}
+	stats.sizes = make(map[int][]int)
+	stats_for_regs := make([]reg_stats, 0)
+	for i := 0; i < 100; i++ {
+		size := 8 + i*8
+		var cfg stream_pack_cfg
+		cfg.buffer_size = size
+		cfg.verbose = false
+		stats.sizes[size] = make([]int, num_regs)
+
+		for reg := 0; reg < num_regs; reg++ {
+			// Pack
+			enc := encoder_v2{0}
+			reg_data := ym_data.register[reg].data
+
+			packed := pack_register_lazy(&enc, reg_data, true, cfg)
+			total := (len(packed) + size)
+			stats.sizes[size][reg] = total
+		}
+	}
+
+	best_total_size := 0
+	best_cache_size := 0
+
+	fmt.Fprintf(csv, "\nBest sizes per register\n")
 	for reg := 0; reg < num_regs; reg++ {
 		fmt.Fprintf(csv, "Reg %d %s,", reg, register_names[reg])
 		min_total := 9999999
 		min_cache := min_total
-		for size := 8; size < 800; size += 8 {
-			// Pack
-			enc := encoder_v2{0}
-			reg_data := ym_data.register[reg].data
-			var cfg stream_pack_cfg
-			cfg.buffer_size = size
-			cfg.verbose = false
 
-			packed := pack_register_lazy(&enc, reg_data, true, cfg)
-
-			total := (len(packed) + size)
+		for i := range stats.sizes {
+			total := stats.sizes[i][reg]
 			fmt.Fprintf(csv, "%d,", total)
 			if total < min_total {
 				min_total = total
-				min_cache = size
+				min_cache = i
 			}
+			fmt.Fprintf(csv, "\n")
 		}
-		fmt.Fprintf(csv, "\n")
-		stats_for_regs[reg] = reg_stats{reg, min_cache, min_total}
+		fmt.Println("Best cache", min_cache)
+		best_total_size += min_total
+		best_cache_size += min_cache
+		stats_for_regs = append(stats_for_regs, reg_stats{reg, min_cache, min_total})
 	}
 
-	fmt.Fprintf(csv, "\nBest sizes per register\n")
-	best_total_size := 0
-	best_cache_size := 0
-	for reg := 0; reg < num_regs; reg++ {
-		best_total_size += stats_for_regs[reg].total_size
-		best_cache_size += stats_for_regs[reg].cache_size
-	}
 	fmt.Fprintf(csv, "\nBest total sizes,%d,%d\n", best_total_size, best_cache_size)
 
 	sort.Slice(stats_for_regs, func(i, j int) bool {
@@ -622,6 +659,19 @@ func stats_file(input_path string) error {
 	}
 
 	csv.Close()
+
+	fmt.Printf("\nBest total sizes, %d,%d\n", best_total_size, best_cache_size)
+	for split := 1; split < num_regs-1; split++ {
+		// Make 2 lists, the "small" list and the big one
+		small_list := stats_for_regs[:split]
+		big_list := stats_for_regs[split:]
+
+		small_size, small_total := find_smallest(&stats, small_list)
+		big_size, big_total := find_smallest(&stats, big_list)
+		fmt.Printf("total size with caches %d/%d -> %d\n",
+			small_size, big_size, small_total+big_total)
+	}
+
 	return nil
 }
 

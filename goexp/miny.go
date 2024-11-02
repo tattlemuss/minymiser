@@ -351,17 +351,11 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	stream_cfg.verbose = file_cfg.verbose
 	packed_streams := make([]packedstream, num_regs)
 
-	um := usage_map{}
-	um.counts = make([]int, 1024)
-	len_map := make(map[int]int)
-	dist_map := make(map[int]int)
 	x := make([]float64, 0)
 	y := make([]float64, 0)
-	offs := make([]int, 0)
-	lens := make([]int, 0)
-	litlens := make([]int, 0)
-	num_matches := 0
-	num_tokens := 0
+	var stats pack_stats
+	stats.len_map = make(map[int]int)
+	stats.dist_map = make(map[int]int)
 
 	for reg := 0; reg < num_regs; reg++ {
 		stream_cfg.buffer_size = file_cfg.cache_sizes[reg]
@@ -380,7 +374,7 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		reg_data := ym_data.register[reg].data
 		packed := &packed_streams[reg].data
 
-		analyse_usages(reg_data, &um)
+		analyse_usages(reg_data, &stats.um)
 		tokens := pack_register_lazy(enc, reg_data, use_cheapest, stream_cfg)
 		*packed = enc.encode(tokens, reg_data)
 
@@ -389,20 +383,20 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 			t := &tokens[i]
 			if t.is_match {
 				if t.len < 512 {
-					len_map[t.len]++
+					stats.len_map[t.len]++
 				}
-				dist_map[t.off]++
-				offs = append(offs, t.off)
-				lens = append(lens, t.len)
+				stats.dist_map[t.off]++
+				stats.offs = append(stats.offs, t.off)
+				stats.lens = append(stats.lens, t.len)
 				//litlens = append(litlens, 0)
 				x = append(x, float64(t.off))
 				y = append(y, float64(t.len))
-				num_matches++
+				stats.num_matches++
 			} else {
-				litlens = append(litlens, t.len)
+				stats.litlens = append(stats.litlens, t.len)
 			}
 		}
-		num_tokens += len(tokens)
+		stats.num_tokens += len(tokens)
 
 		// Verify by unpacking
 		if file_cfg.verify {
@@ -417,36 +411,77 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		}
 	}
 	if false {
-		scatter_int_map("len.svg", len_map)
-		scatter_int_map("off.svg", dist_map)
+		scatter_int_map("len.svg", stats.len_map)
+		scatter_int_map("off.svg", stats.dist_map)
+		// offset vs length scatter
 		xy_plot("scatter.svg", x, y)
 
-		linegraph_int("usage.svg", um.counts)
-		lens = sorti(lens)
-		litlens = sorti(litlens)
-		offs = sorti(offs)
-		histo("Lens", lens)
-		histo("Offs", offs)
-		histo("LitLens", litlens)
-		fmt.Printf("Lits: %d Matches: %d (%.2f%%)\n", num_tokens-num_matches,
-			num_matches, percent(num_matches, num_tokens))
+		linegraph_int("usage.svg", stats.um.counts)
+		stats.lens = sorti(stats.lens)
+		stats.litlens = sorti(stats.litlens)
+		stats.offs = sorti(stats.offs)
+		histo("Lens", stats.lens)
+		histo("Offs", stats.offs)
+		histo("LitLens", stats.litlens)
+		fmt.Printf("Lits: %d Matches: %d (%.2f%%)\n", stats.num_tokens-stats.num_matches,
+			stats.num_matches, percent(stats.num_matches, stats.num_tokens))
+	}
+
+	// Group the registers into sets with the same size
+	sets := make(map[int][]int)
+	for reg := 0; reg < num_regs; reg++ {
+		sets[file_cfg.cache_sizes[reg]] = append(sets[file_cfg.cache_sizes[reg]], reg)
+	}
+	fmt.Println(sets)
+
+	// Calc order of registers in the file
+	// and generate the header data for them
+	reg_order := []byte{}
+	set_header_data := []byte{}
+	for cache_size, set := range sets {
+		// Loop
+		set_header_data = enc_word(set_header_data, uint16(len(set)-1))
+		set_header_data = enc_word(set_header_data, uint16(cache_size))
+		for _, reg := range set {
+			reg_order = append(reg_order, byte(reg))
+		}
+	}
+	set_header_data = enc_word(set_header_data, uint16(0xffff))
+
+	// Number of bytes required by the set data
+	// 4 bytes per set -- loop count, cache size
+	// 2 bytes -- end sentinel
+	if len(set_header_data) != 2+(4*len(sets)) {
+		panic("header size mismatch")
 	}
 
 	// Generate the final data
 	output_data := make([]byte, 0)
 
-	// First the header with the offsets...
-	var offset int = 4*num_regs + 2
+	// Calc overall header size
+	header_size := 2 + num_regs + 4*num_regs + len(set_header_data)
 
-	// Output size in VBLs first
+	// 1) Output size in VBLs first
 	output_data = enc_word(output_data, uint16(ym_data.num_vbls))
-	for reg := 0; reg < num_regs; reg++ {
-		output_data = enc_long(output_data, uint32(offset))
-		offset += len(packed_streams[reg].data)
+
+	// 2) Order of registers
+	output_data = append(output_data, reg_order...)
+
+	data_pos := header_size
+	// Offsets to register data
+	for _, reg := range reg_order {
+		output_data = enc_long(output_data, uint32(data_pos))
+		data_pos += len(packed_streams[reg].data)
+	}
+	// Set data
+	output_data = append(output_data, set_header_data...)
+
+	if len(output_data) != header_size {
+		panic("header size mismatch 2")
 	}
 
 	// ... then the data
-	for reg := 0; reg < num_regs; reg++ {
+	for _, reg := range reg_order {
 		output_data = append(output_data, packed_streams[reg].data...)
 	}
 
@@ -581,11 +616,24 @@ type reg_stats struct {
 	total_size int
 }
 
-type packing_stats struct {
+// Records how big each registers packs to, given a cache size
+type per_reg_stats struct {
+	// key is the cache size, value is array of sizes for each reg
 	sizes map[int]([]int)
 }
 
-func find_smallest(stats *packing_stats, regs []reg_stats) (int, int) {
+type pack_stats struct {
+	um          usage_map
+	len_map     map[int]int
+	dist_map    map[int]int
+	offs        []int
+	lens        []int
+	litlens     []int
+	num_matches int
+	num_tokens  int
+}
+
+func find_smallest(stats *per_reg_stats, regs []reg_stats) (int, int) {
 	min_total := 99999999999
 	min_index := -1
 
@@ -613,11 +661,11 @@ func stats_file(input_path string) error {
 	if err != nil {
 		return err
 	}
-	stats := packing_stats{}
+	stats := per_reg_stats{}
 	stats.sizes = make(map[int][]int)
 	stats_for_regs := make([]reg_stats, 0)
-	for i := 0; i < 100; i++ {
-		size := 8 + i*8
+	for size := 8; size < 1024; size += 32 {
+		fmt.Println(size)
 		var cfg stream_pack_cfg
 		cfg.buffer_size = size
 		cfg.verbose = false
@@ -638,6 +686,12 @@ func stats_file(input_path string) error {
 	best_cache_size := 0
 
 	fmt.Fprintf(csv, "\nBest sizes per register\n")
+	var minimal_cfg file_pack_cfg
+	minimal_cfg.encoder = 1
+	minimal_cfg.verbose = false
+	minimal_cfg.verify = false
+	minimal_cfg.cache_sizes = make([]int, num_regs)
+
 	for reg := 0; reg < num_regs; reg++ {
 		fmt.Fprintf(csv, "Reg %d %s,", reg, register_names[reg])
 		min_total := 9999999
@@ -656,9 +710,15 @@ func stats_file(input_path string) error {
 		best_total_size += min_total
 		best_cache_size += min_cache
 		stats_for_regs = append(stats_for_regs, reg_stats{reg, min_cache, min_total})
+
+		minimal_cfg.cache_sizes[reg] = min_cache
 	}
 
 	fmt.Fprintf(csv, "\nBest total sizes,%d,%d\n", best_total_size, best_cache_size)
+
+	// Write out a minimal file
+	min_file, _ := pack(&ym_data, minimal_cfg)
+	os.WriteFile("minimal.ymp", min_file, 0644)
 
 	sort.Slice(stats_for_regs, func(i, j int) bool {
 		if stats_for_regs[i].cache_size != stats_for_regs[j].cache_size {
@@ -681,17 +741,19 @@ func stats_file(input_path string) error {
 	csv.Close()
 
 	fmt.Printf("\nBest total sizes, %d,%d\n", best_total_size, best_cache_size)
-	for split := 1; split < num_regs-1; split++ {
-		// Make 2 lists, the "small" list and the big one
-		small_list := stats_for_regs[:split]
-		big_list := stats_for_regs[split:]
+	if false {
+		for split := 1; split < num_regs-1; split++ {
+			// Make 2 lists, the "small" list and the big one
+			small_list := stats_for_regs[:split]
+			big_list := stats_for_regs[split:]
 
-		small_cache, small_total := find_smallest(&stats, small_list)
-		big_cache, big_total := find_smallest(&stats, big_list)
+			small_cache, small_total := find_smallest(&stats, small_list)
+			big_cache, big_total := find_smallest(&stats, big_list)
 
-		final_size := small_total + big_total
-		fmt.Printf("total size with caches %d/%d -> %d (loss %d)\n",
-			small_cache, big_cache, final_size, best_total_size-final_size)
+			final_size := small_total + big_total
+			fmt.Printf("total size with caches %d/%d -> %d (loss %d)\n",
+				small_cache, big_cache, final_size, best_total_size-final_size)
+		}
 	}
 
 	return nil

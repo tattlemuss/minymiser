@@ -84,7 +84,6 @@ old_c:			ds.l	1
 ;	CORE PLAYER CODE
 ; -----------------------------------------------------------------------
 NUM_REGS		equ	14
-YMP_CACHE_SIZE		equ	512			; number of saved bytes per register
 
 							; KEEP THESE 3 IN ORDER
 ymunp_match_read_ptr	equ	0			; X when copying, the src pointer (either in cache or in original stream)
@@ -92,22 +91,26 @@ ymunp_stream_read_ptr	equ	4			; position in packed data we are reading from
 ymunp_copy_count_w	equ	8			; number of bytes remaining to copy. Decremented at start of update.
 ymunp_size		equ	10			; structure size
 
+ymset_cache_base_ptr:	equ	0			; bottom location of where to write the data
+ymset_cache_offset:	equ	4			; added to base_ptr for first write ptr
+ymset_size:		equ	6
+
 ; -----------------------------------------------------------------------
 ; a0 = start of packed ym data
 ymp_player_init:
 	move.l	a0,ymp_tune_ptr
 ymp_player_restart:
 	; "globals" first
-	lea	ymp_cache(pc),a2
-	move.l	a2,ymp_cache_write_ptr
-	move.w	#YMP_CACHE_SIZE,ymp_cache_countdown
-
 	lea	ymp_streams_state(pc),a1
 	; a1 = state data
-	move.l	a0,a3
+	move.l	a0,a3					; a3 = copy of packed file start
 	move.w	(a0)+,ymp_vbl_countdown
 
-	; a3 = copy of packed file start
+	; skip the register list
+	move.l	a0,ymp_register_list_ptr
+	lea	NUM_REGS(a0),a0				; skip this data
+
+	; Prime the read addresses for each reg
 	moveq.l	#NUM_REGS-1,d0
 .fill:
 	; a0 = input data (this moves for each channel)
@@ -118,7 +121,25 @@ ymp_player_restart:
 	move.w	#1,ymunp_copy_count_w(a1)		; setup ymunp_copy_count_w
 	lea	ymunp_size(a1),a1			; next stream state
 	dbf	d0,.fill
+
+	; Calculate the set data
+	move.l	a0,ymp_sets_ptr
+	lea	ymp_sets_state(pc),a1			; a1 = set information
+	lea	ymp_cache(pc),a2			; a2 = curr cache write point
+.read_set:
+	move.w	(a0)+,d1				; d1 = size of set - 1
+	bpl.s	.sets_done
 	rts
+.sets_done:
+	move.l	a2,ymset_cache_base_ptr(a1)
+	clr.w	ymset_cache_offset(a1)
+	move.w	(a0)+,d2				; d2 = cache size per reg
+	; Move the cache pointer onwards
+.inc_cache_ptr:
+	add.w	d2,a2
+	dbf	d1,.inc_cache_ptr
+	addq.l	#ymset_size,a1				; on to next
+	bra.s	.read_set
 
 ; -----------------------------------------------------------------------
 ; a0 = input structure
@@ -126,13 +147,25 @@ ymp_player_update:
 	move.w	#$700,$ffff8240.w
 	lea	ymp_streams_state(pc),a0		; a0 = streams state
 	lea	ymp_output_buffer(pc),a6		; a6 = YM buffer
-	move.l	ymp_cache_write_ptr(pc),a2		; a2 = cache write ptr
-	lea	ymp_cache+YMP_CACHE_SIZE(pc),a3		; a3 = cache end ptr (constant!)
-	moveq	#NUM_REGS-1,d1				; d1 = loop counter
-	move.w	#ymunp_size,d2				; d2 = stream structure size
-	move.w	#YMP_CACHE_SIZE,d3			; d3 = cache size
+	move.w	#ymunp_size,d2				; d2 = stream structure size (constant)
+
+	; Update single stream here
+	lea	ymp_sets_state(pc),a5			; a5 = set current data
+	move.l	ymp_sets_ptr(pc),a4			; a4 = static set info
+ymp_set_loop:
+	move.w	(a4)+,d1				; d1 = registers/loop (dbf size)
+	bmi	ymp_sets_done				; check end
+	move.w	(a4)+,d3				; d3 = cache size for set
+
+	; TODO can use (a5)+ here in future?
+	move.l	ymset_cache_base_ptr(a5),a2
+	move.l	a2,a3
+
+	add.w	ymset_cache_offset(a5),a2		; a2 = register's current cache write ptr
+	add.w	d3,a3					; a3 = register's cache end ptr
+ymp_register_loop:
 	moveq	#0,d4					; d4 = temp used for decoding
-ymp_stream_update:
+
 	; a0	= ymunp struct
 	subq.w	#1,ymunp_copy_count_w(a0)
 	bne.s	.stream_copy_one			; still in copying state
@@ -208,8 +241,18 @@ ymp_stream_update:
 	add.w	d3,a2					; next ymp_cache_write_ptr
 	add.w	d3,a3					; next cache_end ptr
 	add.w	d2,a0					; next stream structure
-	dbf	d1,ymp_stream_update
-	bra.s	ym_write
+	dbf	d1,ymp_register_loop
+
+	; Update and wrap the set offset
+	move.w	ymset_cache_offset(a5),d4
+	addq.w	#1,d4
+	cmp.w	d3,d4					;hit the cache size?
+	bne.s	.no_cache_loop
+	moveq	#0,d4
+.no_cache_loop:
+	move.w	d4,ymset_cache_offset(a5)
+	addq.l	#ymset_size,a5
+	bra	ymp_set_loop
 
 ; If the previous byte read was 0, read 2 bytes to generate a 16-bit value
 read_extended_number:
@@ -221,22 +264,26 @@ read_extended_number:
 valid_count:
 	rts
 
+ymp_sets_done:
 ym_write:
 	move.w	#$007,$ffff8240.w
 
 	; We could write these in reverse order and reuse a6?
 	lea	ymp_output_buffer(pc),a6
+	move.l	ymp_register_list_ptr(pc),a5
+	moveq	#0,d0
 	lea	$ffff8800.w,a0
 	lea	$ffff8802.w,a1
 
 r	set	0
 	rept	NUM_REGS
+	move.b	(a5)+,d0				; fetch depack stream index for this reg
 	ifne	r-13					; Buzzer envelope
 		move.b	#r,(a0)
-		move.b	(a6)+,(a1)
+		move.b	(a6,d0.w),(a1)
 	else
 		; Buzzer variant
-		move.b	(a6)+,d0			; Buzzer envelope register is special case,
+		move.b	(a6,d0.w),d0			; Buzzer envelope register is special case,
 		bmi.s	.skip_write
 		move.b	#r,(a0)				; only write if value is not -1
 		move.b	d0,(a1)				; since writing re-starts the envelope
@@ -245,14 +292,6 @@ r	set	0
 r	set	r+1
 	endr
 
-	; Update the "write to cache" variables
-	addq.l	#1,ymp_cache_write_ptr
-	subq.w	#1,ymp_cache_countdown
-	bne.s	.no_cache_loop
-	move.w	#YMP_CACHE_SIZE,ymp_cache_countdown
-	; Roll base cache_write pointers
-	sub.l	#YMP_CACHE_SIZE,ymp_cache_write_ptr
-.no_cache_loop:
 	; Check for tune restart
 	subq.w	#1,ymp_vbl_countdown
 	bne.s	.no_tune_restart
@@ -267,14 +306,22 @@ r	set	r+1
 ; -----------------------------------------------------------------------
 ;
 ymp_tune_ptr:		ds.l	1
-ymp_cache_write_ptr:	ds.l	1
-ymp_cache_countdown:	ds.w	1		; countdown to looping of cache ptrs
+ymp_sets_ptr:		ds.l	1
+ymp_register_list_ptr:	ds.l	1
+
 ymp_streams_state:	ds.b	ymunp_size*NUM_REGS
+ymp_sets_state:		ds.b	ymset_size*NUM_REGS
+
+
 ymp_vbl_countdown:	ds.w	1		; number of VBLs left to restart
 ymp_output_buffer:	ds.b	NUM_REGS
-ymp_cache:		ds.b	YMP_CACHE_SIZE*NUM_REGS
+
+; This is the dumped output
+ymp_cache:		ds.b	8192		; depends on file settings
 			even
 
 ; Our packed data file.
-player_data:		incbin	test_output/inwaves.ym3.go.ymp
+;player_data:		incbin	goexp/minimal.ymp
+player_data:		incbin	goexp/test.ymp
 			even
+player_data_end:

@@ -434,16 +434,26 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	}
 	fmt.Println(sets)
 
-	// Calc order of registers in the file
-	// and generate the header data for them
-	reg_order := []byte{}
+	// Calc mapping of YM reg->stream in the file
+	// and generate the header data for them.
+
+	// We will output the registers to the file, ordered by set
+	// and flattened.
+	reg_order := make([]byte, num_regs)
+	// The inverse order is used at runtime to map from YM reg
+	// to depacked stream in the file.
+	inverse_reg_order := make([]byte, num_regs)
+
 	set_header_data := []byte{}
+	var stream_id byte = 0
 	for cache_size, set := range sets {
 		// Loop
 		set_header_data = enc_word(set_header_data, uint16(len(set)-1))
 		set_header_data = enc_word(set_header_data, uint16(cache_size))
 		for _, reg := range set {
-			reg_order = append(reg_order, byte(reg))
+			inverse_reg_order[reg] = stream_id
+			reg_order[stream_id] = byte(reg)
+			stream_id++
 		}
 	}
 	set_header_data = enc_word(set_header_data, uint16(0xffff))
@@ -465,7 +475,7 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	output_data = enc_word(output_data, uint16(ym_data.num_vbls))
 
 	// 2) Order of registers
-	output_data = append(output_data, reg_order...)
+	output_data = append(output_data, inverse_reg_order...)
 
 	data_pos := header_size
 	// Offsets to register data
@@ -593,7 +603,7 @@ func minpack_file(input_path string, output_path string) error {
 	file_cfg := file_pack_cfg{}
 	file_cfg.verbose = false
 	file_cfg.cache_sizes = make_filled(num_regs, min_cachesize)
-	file_cfg.encoder = 2
+	file_cfg.encoder = 1
 	packed_data, err := pack(&ym_data, file_cfg)
 	if err != nil {
 		return err
@@ -618,8 +628,8 @@ type reg_stats struct {
 
 // Records how big each registers packs to, given a cache size
 type per_reg_stats struct {
-	// key is the cache size, value is array of sizes for each reg
-	sizes map[int]([]int)
+	// key is the cache size, value is array of total_packed_sizes for each reg
+	total_packed_sizes map[int]([]int)
 }
 
 type pack_stats struct {
@@ -637,11 +647,11 @@ func find_smallest(stats *per_reg_stats, regs []reg_stats) (int, int) {
 	min_total := 99999999999
 	min_index := -1
 
-	for key := range stats.sizes {
+	for key := range stats.total_packed_sizes {
 		// Create total cost
 		total_cost := 0
 		for j := range regs {
-			total_cost += stats.sizes[key][regs[j].reg]
+			total_cost += stats.total_packed_sizes[key][regs[j].reg]
 		}
 		if total_cost < min_total {
 			min_total = total_cost
@@ -662,23 +672,24 @@ func stats_file(input_path string) error {
 		return err
 	}
 	stats := per_reg_stats{}
-	stats.sizes = make(map[int][]int)
+	stats.total_packed_sizes = make(map[int][]int)
 	stats_for_regs := make([]reg_stats, 0)
 	for size := 8; size < 1024; size += 32 {
 		fmt.Println(size)
 		var cfg stream_pack_cfg
 		cfg.buffer_size = size
 		cfg.verbose = false
-		stats.sizes[size] = make([]int, num_regs)
+		stats.total_packed_sizes[size] = make([]int, num_regs)
 
 		for reg := 0; reg < num_regs; reg++ {
 			// Pack
-			enc := encoder_v2{0}
+			enc := encoder_v1{0}
 			reg_data := ym_data.register[reg].data
 
-			packed := pack_register_lazy(&enc, reg_data, true, cfg)
-			total := (len(packed) + size)
-			stats.sizes[size][reg] = total
+			tokens := pack_register_lazy(&enc, reg_data, true, cfg)
+			packed_data := enc.encode(tokens, reg_data)
+			total := (len(packed_data) + size)
+			stats.total_packed_sizes[size][reg] = total
 		}
 	}
 
@@ -697,12 +708,12 @@ func stats_file(input_path string) error {
 		min_total := 9999999
 		min_cache := min_total
 
-		for i := range stats.sizes {
-			total := stats.sizes[i][reg]
+		for csize := range stats.total_packed_sizes {
+			total := stats.total_packed_sizes[csize][reg]
 			fmt.Fprintf(csv, "%d,", total)
 			if total < min_total {
 				min_total = total
-				min_cache = i
+				min_cache = csize
 			}
 			fmt.Fprintf(csv, "\n")
 		}

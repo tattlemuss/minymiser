@@ -44,7 +44,9 @@ modplay_loop:
 	;cmp.b 	#$2,$fffffc02.w
 	;bne.s	.waitstart
 
-	lea	player_data,a0
+	lea	player_state,a0
+	lea	tune_data,a1
+	lea	player_cache,a2
 	bsr	ymp_player_init
 
 	; Install timer C as test
@@ -54,25 +56,37 @@ modplay_loop:
 	clr.b	$484.w
 	move.w	#$2300,sr			; interrupts on
 
-.key:	
-	cmp.b 	#$39,$fffffc02.w
-	bne.s	.key
+	; wait key
+	move.w	#8,-(a7)
+	trap	#1
+	addq.l	#2,a7
 
-	; :TODO: restore old systems
+	or.w	#$0700,sr			; disable interrupts
 	move.l	old_c,$114.w
-	rts
+
+	move.b	#7,$ffff8800.w			; mixer reg
+	move.b	#%00111111,$ffff8802.w		; suppress all channels
+
+	move.w	#$2300,sr			; interrupts on
+
+	clr.w	-(a7)
+	trap	#1
 
 ;-------------
-c_routine
-	move.w	#$2500,sr			; Allow other MFP interrupts (ikbd, border) to run
-
+c_routine:
 	sub.w	#50,tccount			; Allow variable play speed (here TC=50)
 	bpl.s	.skip
 	add.w	#200,tccount
+	move.w	$ffff8240.w,-(a7)
+	move.w	#$700,$ffff8240.w
+
+	; Do the playback
 	movem.l	d0-a6,-(a7)
+	lea	player_state,a0
 	bsr	ymp_player_update
-	move.w	#$777,$ffff8240.w
 	movem.l	(a7)+,d0-a6
+
+	move.w	(a7)+,$ffff8240.w
 .skip:	move.l	old_c,-(sp)
 	rts
 
@@ -84,6 +98,9 @@ old_c:			ds.l	1
 
 ; Our packed data file.
 ;player_data:		incbin	goexp/minimal.ymp
-player_data:		incbin	goexp/test.ymp
+tune_data:		incbin	goexp/test.ymp
 			even
-player_data_end:
+tune_data_end:
+
+player_state		ds.b	ymp_size
+player_cache		ds.b	8192		; or whatever size you need

@@ -845,7 +845,13 @@ func main() {
 		help_flags.Parse(args)
 		names := help_flags.Args()
 		if len(names) > 0 {
-			cmd_usage(args[0], commands[names[0]])
+			cmd, pres := commands[names[0]]
+			if !pres {
+				fmt.Println("error: unknown command for help")
+				usage(commands)
+				os.Exit(1)
+			}
+			cmd_usage(names[0], cmd)
 		} else {
 			usage(commands)
 		}

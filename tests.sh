@@ -12,6 +12,6 @@ do
 	echo $fname
 	python3 python/miny.py test_data/$fname test_output/$fname.py.ymp > test_output/$fname.py.txt
 	cpp/bin/test test_data/$fname test_output/$fname.cpp.ymp > test_output/$fname.cpp.txt
-	goexp/miny pack test_data/$fname test_output/$fname.go.ymp > test_output/$fname.go.txt
+	goexp/miny small test_data/$fname test_output/$fname.go.ymp > test_output/$fname.go.txt
 done
 

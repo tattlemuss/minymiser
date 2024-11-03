@@ -454,9 +454,21 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	output_data := make([]byte, 0)
 
 	// Calc overall header size
-	header_size := 2 + num_regs + 4*num_regs + len(set_header_data)
+	header_size := 2 + // header
+		2 + // cache size
+		2 + // num vbls
+		num_regs + // register order
+		4*num_regs + // offsets to packed streams
+		len(set_header_data) // set information
 
-	// 1) Output size in VBLs first
+	// Header: "Y" + 0x1 (version)
+	output_data = enc_byte(output_data, 'Y')
+	output_data = enc_byte(output_data, 0x1)
+
+	// 0) Output required cache size (for user reference)
+	output_data = enc_word(output_data, uint16(sum(file_cfg.cache_sizes)))
+
+	// 1) Output size in VBLs
 	output_data = enc_word(output_data, uint16(ym_data.num_vbls))
 
 	// 2) Order of registers

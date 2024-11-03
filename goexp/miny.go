@@ -219,7 +219,7 @@ func tokenize_greedy(enc encoder, data []byte, cfg stream_pack_cfg) []byte {
 	return enc.encode(tokens, data)
 }
 
-func tokensize_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []token {
+func tokenize_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []token {
 	var tokens []token
 
 	used_match := 0
@@ -361,7 +361,7 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		packed := &packed_streams[reg].data
 
 		analyse_usages(reg_data, &stats.um)
-		tokens := tokensize_lazy(enc, reg_data, use_cheapest, stream_cfg)
+		tokens := tokenize_lazy(enc, reg_data, use_cheapest, stream_cfg)
 		*packed = enc.encode(tokens, reg_data)
 
 		// Graph histogram
@@ -632,12 +632,6 @@ type reg_stats struct {
 	total_size int
 }
 
-// Records how big each registers packs to, given a cache size
-type per_reg_stats struct {
-	// key is the cache size, value is array of total_packed_sizes for each reg
-	total_packed_sizes map[int]([]int)
-}
-
 type pack_stats struct {
 	um          usage_map
 	len_map     map[int]int
@@ -667,10 +661,18 @@ func find_smallest(stats *per_reg_stats, regs []reg_stats) (int, int) {
 	return min_index, min_total
 }
 
+// Result for a single attempt at packing a register stream with
+// a given cache size.
 type small_result struct {
 	reg        int
 	cachesize  int
 	packedsize int
+}
+
+// Records how big each registers packs to, given a seris of cache sizes.
+type per_reg_stats struct {
+	// key is the cache size, value is array of total_packed_sizes for each reg
+	total_packed_sizes map[int]([]int)
 }
 
 func command_small(input_path string, output_path string) error {
@@ -679,10 +681,6 @@ func command_small(input_path string, output_path string) error {
 		return err
 	}
 
-	csv, err := os.Create("sizes.csv")
-	if err != nil {
-		return err
-	}
 	stats := per_reg_stats{}
 	stats.total_packed_sizes = make(map[int][]int)
 	min_size := 8
@@ -692,7 +690,7 @@ func command_small(input_path string, output_path string) error {
 		stats.total_packed_sizes[size] = make([]int, num_regs)
 	}
 
-	messages := make(chan small_result, 1)
+	messages := make(chan small_result, 15)
 
 	// Async func to pack the file and return sizes
 	find_packed_size_func := func(reg int, regcachesize int, ym_data *ym_streams) {
@@ -701,7 +699,7 @@ func command_small(input_path string, output_path string) error {
 		cfg.buffer_size = regcachesize
 		cfg.verbose = false
 		reg_data := ym_data.register[reg].data
-		tokens := tokensize_lazy(&enc, reg_data, true, cfg)
+		tokens := tokenize_lazy(&enc, reg_data, true, cfg)
 		packed_data := enc.encode(tokens, reg_data)
 		if err != nil {
 			fmt.Println(err)
@@ -735,7 +733,6 @@ func command_small(input_path string, output_path string) error {
 	best_cache_size := 0
 
 	stats_for_regs := make([]reg_stats, 0)
-	fmt.Fprintf(csv, "\nBest sizes per register\n")
 	var minimal_cfg file_pack_cfg
 	minimal_cfg.encoder = 1
 	minimal_cfg.verbose = false
@@ -744,18 +741,15 @@ func command_small(input_path string, output_path string) error {
 	minimal_cfg.cache_sizes = make([]int, num_regs)
 
 	for reg := 0; reg < num_regs; reg++ {
-		fmt.Fprintf(csv, "Reg %d %s,", reg, register_names[reg])
 		min_total := 9999999
 		min_cache := min_total
 
 		for csize := range stats.total_packed_sizes {
 			total := stats.total_packed_sizes[csize][reg]
-			fmt.Fprintf(csv, "%d,", total)
 			if total < min_total {
 				min_total = total
 				min_cache = csize
 			}
-			fmt.Fprintf(csv, "\n")
 		}
 		best_total_size += min_total
 		best_cache_size += min_cache
@@ -774,15 +768,10 @@ func command_small(input_path string, output_path string) error {
 	// Now we can grade the streams based on who needs the biggest cache
 	for i := 0; i < num_regs; i++ {
 		reg := stats_for_regs[i].reg
-		fmt.Fprintf(csv, "Reg %d %s,", reg, register_names[reg])
-		fmt.Fprintf(csv, "%d,%d\n", stats_for_regs[i].total_size, stats_for_regs[i].cache_size)
-
 		fmt.Printf("Reg %2d Needs cache %4d -> Total size %5d (%s)\n", reg, stats_for_regs[i].cache_size,
 			stats_for_regs[i].total_size,
 			register_names[reg])
 	}
-
-	csv.Close()
 
 	// Write out a final minimal file
 	min_file, _ := pack(&ym_data, minimal_cfg)

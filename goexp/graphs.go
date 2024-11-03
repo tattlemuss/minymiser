@@ -1,12 +1,22 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"sort"
 
 	"github.com/wcharczuk/go-chart/v2"
 	//exposes "chart"
 )
+
+func histo(name string, vals []int) {
+	for i := 10; i < 100; i += 5 {
+		pos := i * len(vals) / 100
+		fmt.Printf("%4v ", vals[pos])
+	}
+	fmt.Printf("%4d ", uint(vals[len(vals)-1]))
+	fmt.Println("<--" + name)
+}
 
 func xy_plot(path string, x []float64, y []float64) error {
 	graph := chart.Chart{

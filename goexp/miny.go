@@ -190,7 +190,7 @@ func find_cheapest_match(enc encoder, data []byte, head int, distance int) match
 	return best_match
 }
 
-func pack_register_greedy(enc encoder, data []byte, cfg stream_pack_cfg) []byte {
+func tokenize_greedy(enc encoder, data []byte, cfg stream_pack_cfg) []byte {
 	var tokens []token
 
 	head := 0
@@ -218,7 +218,7 @@ func pack_register_greedy(enc encoder, data []byte, cfg stream_pack_cfg) []byte 
 	return enc.encode(tokens, data)
 }
 
-func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []token {
+func tokensize_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_pack_cfg) []token {
 	var tokens []token
 
 	used_match := 0
@@ -303,6 +303,7 @@ func pack_register_lazy(enc encoder, data []byte, use_cheapest bool, cfg stream_
 	return tokens
 }
 
+// Read the file array and create individual streams for the registers.
 func create_ym_streams(data []byte) (ym_streams, error) {
 	// check header
 	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3_header) {
@@ -326,23 +327,7 @@ func create_ym_streams(data []byte) (ym_streams, error) {
 	return ym3, nil
 }
 
-func sorti(keys []int) []int {
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i] < keys[j]
-	})
-	return keys
-}
-
-func histo(name string, vals []int) {
-	for i := 10; i < 100; i += 5 {
-		pos := i * len(vals) / 100
-		fmt.Printf("%4v ", vals[pos])
-	}
-	fmt.Printf("%4d ", uint(vals[len(vals)-1]))
-	fmt.Println("<--" + name)
-}
-
-// Pack a YM3 data file and return an encoded array of bytes.
+// Core function to ack a YM3 data file and return an encoded array of bytes.
 func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	// Compression settings
 	use_cheapest := false
@@ -375,7 +360,7 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		packed := &packed_streams[reg].data
 
 		analyse_usages(reg_data, &stats.um)
-		tokens := pack_register_lazy(enc, reg_data, use_cheapest, stream_cfg)
+		tokens := tokensize_lazy(enc, reg_data, use_cheapest, stream_cfg)
 		*packed = enc.encode(tokens, reg_data)
 
 		// Graph histogram
@@ -417,9 +402,9 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		xy_plot("scatter.svg", x, y)
 
 		linegraph_int("usage.svg", stats.um.counts)
-		stats.lens = sorti(stats.lens)
-		stats.litlens = sorti(stats.litlens)
-		stats.offs = sorti(stats.offs)
+		sort.Ints(stats.lens)
+		sort.Ints(stats.litlens)
+		sort.Ints(stats.offs)
 		histo("Lens", stats.lens)
 		histo("Offs", stats.offs)
 		histo("LitLens", stats.litlens)
@@ -432,7 +417,6 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	for reg := 0; reg < num_regs; reg++ {
 		sets[file_cfg.cache_sizes[reg]] = append(sets[file_cfg.cache_sizes[reg]], reg)
 	}
-	fmt.Println(sets)
 
 	// Calc mapping of YM reg->stream in the file
 	// and generate the header data for them.
@@ -498,6 +482,7 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	return output_data, nil
 }
 
+// Load an input file and create the ym_streams data object.
 func load_ym_stream(input_path string) (ym_streams, error) {
 	dat, err := os.ReadFile(input_path)
 	if err != nil {
@@ -508,7 +493,8 @@ func load_ym_stream(input_path string) (ym_streams, error) {
 	return ym_data, err
 }
 
-func pack_file(input_path string, output_path string, file_cfg file_pack_cfg) error {
+// Pack a file with custom config like cache size.
+func command_custom(input_path string, output_path string, file_cfg file_pack_cfg) error {
 	ym_data, err := load_ym_stream(input_path)
 	if err != nil {
 		return err
@@ -581,7 +567,7 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 	return min_cachesize, nil
 }
 
-func minpack_file(input_path string, output_path string) error {
+func command_quick(input_path string, output_path string) error {
 	ym_data, err := load_ym_stream(input_path)
 	if err != nil {
 		return err
@@ -661,7 +647,7 @@ func find_smallest(stats *per_reg_stats, regs []reg_stats) (int, int) {
 	return min_index, min_total
 }
 
-func stats_file(input_path string) error {
+func command_small(input_path string, output_path string) error {
 	ym_data, err := load_ym_stream(input_path)
 	if err != nil {
 		return err
@@ -674,7 +660,7 @@ func stats_file(input_path string) error {
 	stats := per_reg_stats{}
 	stats.total_packed_sizes = make(map[int][]int)
 	stats_for_regs := make([]reg_stats, 0)
-	for size := 8; size < 1024; size += 32 {
+	for size := 8; size < 1024; size += 8 {
 		fmt.Println(size)
 		var cfg stream_pack_cfg
 		cfg.buffer_size = size
@@ -686,7 +672,7 @@ func stats_file(input_path string) error {
 			enc := encoder_v1{0}
 			reg_data := ym_data.register[reg].data
 
-			tokens := pack_register_lazy(&enc, reg_data, true, cfg)
+			tokens := tokensize_lazy(&enc, reg_data, true, cfg)
 			packed_data := enc.encode(tokens, reg_data)
 			total := (len(packed_data) + size)
 			stats.total_packed_sizes[size][reg] = total
@@ -729,7 +715,10 @@ func stats_file(input_path string) error {
 
 	// Write out a minimal file
 	min_file, _ := pack(&ym_data, minimal_cfg)
-	os.WriteFile("minimal.ymp", min_file, 0644)
+	err = os.WriteFile(output_path, min_file, 0644)
+	if err != nil {
+		return err
+	}
 
 	sort.Slice(stats_for_regs, func(i, j int) bool {
 		if stats_for_regs[i].cache_size != stats_for_regs[j].cache_size {
@@ -770,83 +759,124 @@ func stats_file(input_path string) error {
 	return nil
 }
 
+type command struct {
+	fn       func(args []string) error
+	flagset  *flag.FlagSet
+	argsdesc string // argument description
+	desc     string
+}
+
+func cmd_usage(name string, cmd command) {
+	fmt.Printf("%s %s - %s\n", name, cmd.argsdesc, cmd.desc)
+	fs := cmd.flagset
+	var count int = 0
+	fs.VisitAll(func(_ *flag.Flag) {
+		count++
+	})
+	if count != 0 {
+		fs.Usage()
+	}
+}
+
+func usage(commands map[string]command) {
+	fmt.Println()
+	fmt.Println("Usage: miny <command> [arguments]")
+	fmt.Println("Commands available:")
+
+	names := []string{}
+	for name := range commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		cmd := commands[name]
+		fmt.Printf("    %-10s %s\n", name, cmd.desc)
+	}
+}
+
 func main() {
-	packCmd := flag.NewFlagSet("pack", flag.ExitOnError)
-	packOptSize := packCmd.Int("cachesize", num_regs*512, "overall cache size in bytes")
-	packOptVerbose := packCmd.Bool("verbose", false, "verbose output")
-	packOptEncoder := packCmd.Int("encoder", 1, "encoder version (1|2)")
+	pack_flags := flag.NewFlagSet("pack", flag.ExitOnError)
+	//unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
+	quick_flags := flag.NewFlagSet("minpack", flag.ExitOnError)
+	small_flags := flag.NewFlagSet("smallest", flag.ExitOnError)
+	help_flags := flag.NewFlagSet("help", flag.ExitOnError)
 
-	unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
+	packOptSize := pack_flags.Int("cachesize", num_regs*512, "overall cache size in bytes")
+	packOptVerbose := pack_flags.Bool("verbose", false, "verbose output")
+	packOptEncoder := pack_flags.Int("encoder", 1, "encoder version (1|2)")
+	var commands map[string]command
 
-	minpackCmd := flag.NewFlagSet("minpack", flag.ExitOnError)
-
-	subcommands := []string{"pack", "unpack", "minpack"}
-	flagsets := []*flag.FlagSet{packCmd, unpackCmd, minpackCmd}
-
-	usage := func() {
-		fmt.Println()
-		fmt.Println("usage: miny <subcommand> [arguments]")
-		fmt.Println("  where <subcommand> is one of", subcommands)
-		fmt.Println()
-		for _, fs := range flagsets {
-			fs.Usage()
-		}
-	}
-
-	if len(os.Args) < 2 {
-		fmt.Println("error: expected a subcommand, one of", subcommands)
-		usage()
-		os.Exit(1)
-	}
-
-	pack := func(args []string) {
-		packCmd.Parse(args)
-		files := packCmd.Args()
+	cmd_pack := func(args []string) error {
+		pack_flags.Parse(args)
+		files := pack_flags.Args()
 		if len(files) != 2 {
 			fmt.Println("pack: expected <input> <output> arguments")
-			usage()
 			os.Exit(1)
 		}
 		cfg := file_pack_cfg{}
 		cfg.cache_sizes = make_filled(num_regs, *packOptSize/num_regs)
 		cfg.verbose = *packOptVerbose
 		cfg.encoder = *packOptEncoder
-		err := pack_file(files[0], files[1], cfg)
-		if err != nil {
-			fmt.Println("Error in pack_file", err.Error())
-			os.Exit(1)
-		}
+		return command_custom(files[0], files[1], cfg)
 	}
 
-	minpack := func(args []string) {
-		minpackCmd.Parse(args)
-		files := minpackCmd.Args()
+	cmd_quick := func(args []string) error {
+		quick_flags.Parse(args)
+		files := quick_flags.Args()
 		if len(files) != 2 {
 			fmt.Println("minpack: expected <input> <output> arguments")
-			usage()
 			os.Exit(1)
 		}
-		err := minpack_file(files[0], files[1])
-		if err != nil {
-			fmt.Println("Error in minpack_file", err.Error())
+		return command_quick(files[0], files[1])
+	}
+
+	cmd_small := func(args []string) error {
+		small_flags.Parse(args)
+		files := small_flags.Args()
+		if len(files) != 2 {
+			fmt.Println("minpack: expected <input> <output> arguments")
 			os.Exit(1)
 		}
+		return command_small(files[0], files[1])
+	}
+
+	cmd_help := func(args []string) error {
+		help_flags.Parse(args)
+		names := help_flags.Args()
+		if len(names) > 0 {
+			cmd_usage(args[0], commands[names[0]])
+		} else {
+			usage(commands)
+		}
+		return nil
+	}
+
+	commands = map[string]command{
+		"pack": {cmd_pack, pack_flags, "<input> <output>", "pack with custom settings"},
+		//"unpack":   {nil, unpackCmd, "<input> <output>", "unpack to YM3 format (TBD)"},
+		"quick": {cmd_quick, quick_flags, "<input> <output>", "pack to small with quick runtime"},
+		"small": {cmd_small, small_flags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},
+		"help":  {cmd_help, help_flags, "", "list commands or describe a single command"},
+	}
+
+	if len(os.Args) < 2 {
+		fmt.Println("error: expected a command")
+		usage(commands)
+		os.Exit(1)
 	}
 
 	// This all feels rather clunky...
-	switch os.Args[1] {
-	case packCmd.Name():
-		pack(os.Args[2:])
-	case unpackCmd.Name():
-		fmt.Println("unpack not currently supported")
+	cmd, pres := commands[os.Args[1]]
+	if !pres {
+		fmt.Println("error: unknown command")
+		usage(commands)
 		os.Exit(1)
-	case minpackCmd.Name():
-		minpack(os.Args[2:])
-	case "stats":
-		stats_file(os.Args[2])
-	default:
-		fmt.Println("error: unknown subcommand")
-		usage()
+	}
+
+	err := cmd.fn(os.Args[2:])
+	if err != nil {
+		fmt.Println("Error in pack_file", err.Error())
 		os.Exit(1)
 	}
 }

@@ -514,6 +514,7 @@ func command_custom(input_path string, output_path string, file_cfg file_pack_cf
 		return err
 	}
 
+	file_cfg.report = true
 	packed_data, err := pack(&ym_data, file_cfg)
 	if err != nil {
 		return err
@@ -654,6 +655,12 @@ func find_smallest(stats *per_reg_stats, regs []reg_stats) (int, int) {
 	return min_index, min_total
 }
 
+type small_result struct {
+	reg        int
+	cachesize  int
+	packedsize int
+}
+
 func command_small(input_path string, output_path string) error {
 	ym_data, err := load_ym_stream(input_path)
 	if err != nil {
@@ -666,31 +673,56 @@ func command_small(input_path string, output_path string) error {
 	}
 	stats := per_reg_stats{}
 	stats.total_packed_sizes = make(map[int][]int)
-	stats_for_regs := make([]reg_stats, 0)
-	fmt.Print("Collecting stats")
-	for size := 8; size < 1024; size += 8 {
-		fmt.Print(".")
-		var cfg stream_pack_cfg
-		cfg.buffer_size = size
-		cfg.verbose = false
+	min_size := 8
+	max_size := 1024
+	step := 16
+	for size := min_size; size < max_size; size += step {
 		stats.total_packed_sizes[size] = make([]int, num_regs)
+	}
 
-		for reg := 0; reg < num_regs; reg++ {
-			// Pack
-			enc := encoder_v1{0}
-			reg_data := ym_data.register[reg].data
+	messages := make(chan small_result, 1)
 
-			tokens := tokensize_lazy(&enc, reg_data, true, cfg)
-			packed_data := enc.encode(tokens, reg_data)
-			total := (len(packed_data) + size)
-			stats.total_packed_sizes[size][reg] = total
+	// Async func to pack the file and return sizes
+	find_packed_size_func := func(reg int, regcachesize int, ym_data *ym_streams) {
+		enc := encoder_v1{0}
+		var cfg stream_pack_cfg
+		cfg.buffer_size = regcachesize
+		cfg.verbose = false
+		reg_data := ym_data.register[reg].data
+		tokens := tokensize_lazy(&enc, reg_data, true, cfg)
+		packed_data := enc.encode(tokens, reg_data)
+		if err != nil {
+			fmt.Println(err)
+			messages <- small_result{reg, 0, 0}
+		} else {
+			messages <- small_result{reg, regcachesize, len(packed_data)}
 		}
+	}
+
+	fmt.Print("Collecting stats")
+	for reg := 0; reg < num_regs; reg++ {
+		fmt.Print(".")
+
+		// Launch...
+		for size := min_size; size < max_size; size += step {
+			go find_packed_size_func(reg, size, &ym_data)
+		}
+
+		// ... Collect.
+		for size := min_size; size < max_size; size += step {
+			msg := <-messages
+			csize := msg.cachesize
+			total := msg.cachesize + msg.packedsize
+			stats.total_packed_sizes[csize][reg] = total
+		}
+
 	}
 	fmt.Println()
 
 	best_total_size := 0
 	best_cache_size := 0
 
+	stats_for_regs := make([]reg_stats, 0)
 	fmt.Fprintf(csv, "\nBest sizes per register\n")
 	var minimal_cfg file_pack_cfg
 	minimal_cfg.encoder = 1

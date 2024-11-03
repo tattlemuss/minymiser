@@ -85,7 +85,8 @@ type file_pack_cfg struct {
 	cache_sizes []int // cache size for each individual reg
 	verbose     bool
 	verify      bool
-	encoder     int // 1 or 2
+	report      bool // print output report to stdout
+	encoder     int  // 1 or 2
 }
 
 // Describes packing config for a single register stream
@@ -479,6 +480,19 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 		output_data = append(output_data, packed_streams[reg].data...)
 	}
 
+	if file_cfg.report {
+		orig_size := ym_data.data_size
+		packed_size := len(output_data)
+		cache_size := sum(file_cfg.cache_sizes)
+		total_size := cache_size + packed_size
+		fmt.Println("===== Complete =====")
+		fmt.Printf("Original size:    %6d\n", orig_size)
+		fmt.Printf("Packed size:      %6d (%.1f%%)\n", packed_size, percent(packed_size, orig_size))
+		fmt.Printf("Num cache sizes:  %6d (smaller=faster)\n", len(sets))
+		fmt.Printf("Total cache size: %6d\n", cache_size)
+		fmt.Printf("Total RAM:        %6d (%.1f%%)\n", total_size, percent(total_size, orig_size))
+	}
+
 	return output_data, nil
 }
 
@@ -504,10 +518,6 @@ func command_custom(input_path string, output_path string, file_cfg file_pack_cf
 	if err != nil {
 		return err
 	}
-
-	fmt.Printf("Original size: %d Packed size %d (%.2f%%) Total RAM %d\n",
-		ym_data.data_size, len(packed_data), percent(len(packed_data), ym_data.data_size),
-		sum(file_cfg.cache_sizes)+len(packed_data))
 
 	err = os.WriteFile(output_path, packed_data, 0644)
 	return err
@@ -547,13 +557,15 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 
 	min_cachesize := -1
 	min_size := 1 * 1024 * 1024
+	fmt.Print("Collecting stats")
 	for i := min_i; i <= max_i; i += step {
 		msg := <-messages
 
 		this_size := msg.packedsize
 		total_size := msg.cachesize + this_size
-		fmt.Printf("Cache size: %d Packed size: %d Total size: %d\n",
-			msg.cachesize, this_size, total_size)
+		fmt.Print(".")
+		//fmt.Printf("Cache size: %d Packed size: %d Total size: %d\n",
+		//	msg.cachesize, this_size, total_size)
 
 		if total_size < min_size {
 			min_size = total_size
@@ -562,6 +574,7 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 
 		size_map[msg.cachesize] = this_size //total_size
 	}
+	fmt.Println()
 
 	//scatter_int_map(phase+".svg", size_map)
 	return min_cachesize, nil
@@ -590,18 +603,12 @@ func command_quick(input_path string, output_path string) error {
 	file_cfg.verbose = false
 	file_cfg.cache_sizes = make_filled(num_regs, min_cachesize)
 	file_cfg.encoder = 1
+	file_cfg.report = true
 	packed_data, err := pack(&ym_data, file_cfg)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("---- Final output ----")
-	fmt.Printf("Original size: %d Packed size %d (%.2f%%) Total RAM %d\n",
-		ym_data.data_size, len(packed_data), percent(len(packed_data), ym_data.data_size),
-		sum(file_cfg.cache_sizes)+len(packed_data))
-
-	fmt.Printf("Needs a cache size of %d (%d per reg)\n", min_cachesize*num_regs,
-		min_cachesize)
 	err = os.WriteFile(output_path, packed_data, 0644)
 	return err
 }
@@ -660,8 +667,9 @@ func command_small(input_path string, output_path string) error {
 	stats := per_reg_stats{}
 	stats.total_packed_sizes = make(map[int][]int)
 	stats_for_regs := make([]reg_stats, 0)
+	fmt.Print("Collecting stats")
 	for size := 8; size < 1024; size += 8 {
-		fmt.Println(size)
+		fmt.Print(".")
 		var cfg stream_pack_cfg
 		cfg.buffer_size = size
 		cfg.verbose = false
@@ -678,6 +686,7 @@ func command_small(input_path string, output_path string) error {
 			stats.total_packed_sizes[size][reg] = total
 		}
 	}
+	fmt.Println()
 
 	best_total_size := 0
 	best_cache_size := 0
@@ -687,6 +696,7 @@ func command_small(input_path string, output_path string) error {
 	minimal_cfg.encoder = 1
 	minimal_cfg.verbose = false
 	minimal_cfg.verify = false
+	minimal_cfg.report = true
 	minimal_cfg.cache_sizes = make([]int, num_regs)
 
 	for reg := 0; reg < num_regs; reg++ {
@@ -703,21 +713,11 @@ func command_small(input_path string, output_path string) error {
 			}
 			fmt.Fprintf(csv, "\n")
 		}
-		fmt.Println("Best cache", min_cache)
 		best_total_size += min_total
 		best_cache_size += min_cache
 		stats_for_regs = append(stats_for_regs, reg_stats{reg, min_cache, min_total})
 
 		minimal_cfg.cache_sizes[reg] = min_cache
-	}
-
-	fmt.Fprintf(csv, "\nBest total sizes,%d,%d\n", best_total_size, best_cache_size)
-
-	// Write out a minimal file
-	min_file, _ := pack(&ym_data, minimal_cfg)
-	err = os.WriteFile(output_path, min_file, 0644)
-	if err != nil {
-		return err
 	}
 
 	sort.Slice(stats_for_regs, func(i, j int) bool {
@@ -740,7 +740,13 @@ func command_small(input_path string, output_path string) error {
 
 	csv.Close()
 
-	fmt.Printf("\nBest total sizes, %d,%d\n", best_total_size, best_cache_size)
+	// Write out a final minimal file
+	min_file, _ := pack(&ym_data, minimal_cfg)
+	err = os.WriteFile(output_path, min_file, 0644)
+	if err != nil {
+		return err
+	}
+
 	if false {
 		for split := 1; split < num_regs-1; split++ {
 			// Make 2 lists, the "small" list and the big one

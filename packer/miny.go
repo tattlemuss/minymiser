@@ -824,7 +824,7 @@ func main() {
 		pack_flags.Parse(args)
 		files := pack_flags.Args()
 		if len(files) != 2 {
-			fmt.Println("pack: expected <input> <output> arguments")
+			fmt.Println("'pack' command: expected <input> <output> arguments")
 			os.Exit(1)
 		}
 		cfg := file_pack_cfg{}
@@ -838,7 +838,7 @@ func main() {
 		quick_flags.Parse(args)
 		files := quick_flags.Args()
 		if len(files) != 2 {
-			fmt.Println("minpack: expected <input> <output> arguments")
+			fmt.Println("'quick' command: expected <input> <output> arguments")
 			os.Exit(1)
 		}
 		return command_quick(files[0], files[1])
@@ -848,7 +848,7 @@ func main() {
 		small_flags.Parse(args)
 		files := small_flags.Args()
 		if len(files) != 2 {
-			fmt.Println("minpack: expected <input> <output> arguments")
+			fmt.Println("'small' command: expected <input> <output> arguments")
 			os.Exit(1)
 		}
 		return command_small(files[0], files[1])

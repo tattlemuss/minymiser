@@ -39,11 +39,6 @@ main:
 	trap	#1				;call gemdos
 
 modplay_loop:
-
-.waitstart:
-	;cmp.b 	#$2,$fffffc02.w
-	;bne.s	.waitstart
-
 	lea	player_state,a0
 	lea	tune_data,a1
 	lea	player_cache,a2
@@ -61,12 +56,11 @@ modplay_loop:
 	trap	#1
 	addq.l	#2,a7
 
+	; Restore system
 	or.w	#$0700,sr			; disable interrupts
 	move.l	old_c,$114.w
-
 	move.b	#7,$ffff8800.w			; mixer reg
 	move.b	#%00111111,$ffff8802.w		; suppress all channels
-
 	move.w	#$2300,sr			; interrupts on
 
 	clr.w	-(a7)
@@ -97,8 +91,7 @@ old_c:			ds.l	1
 			include	"ymp.s"
 
 ; Our packed data file.
-;player_data:		incbin	goexp/minimal.ymp
-tune_data:		incbin	goexp/test.ymp
+tune_data:		incbin	example.ymp
 			even
 tune_data_end:
 

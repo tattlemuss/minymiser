@@ -24,7 +24,7 @@ jobs:
 
     - name: Build
       run: |
-        cd goexp
+        cd packer
         mkdir bin
         GOOS=windows GOARCH=amd64 go build -o bin/miny-amd64-win.exe .
         GOOS=darwin  GOARCH=amd64 go build -o bin/miny-amd64-darwin .
@@ -35,4 +35,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: miny-${{ github.sha }}
-        path: goexp/bin/*
+        path: |
+            packer/bin/*
+            player/*

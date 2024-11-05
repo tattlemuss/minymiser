@@ -337,8 +337,6 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 	stream_cfg.verbose = file_cfg.verbose
 	packed_streams := make([]packedstream, num_regs)
 
-	x := make([]float64, 0)
-	y := make([]float64, 0)
 	var stats pack_stats
 	stats.len_map = make(map[int]int)
 	stats.dist_map = make(map[int]int)
@@ -374,9 +372,6 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 				stats.dist_map[t.off]++
 				stats.offs = append(stats.offs, t.off)
 				stats.lens = append(stats.lens, t.len)
-				//litlens = append(litlens, 0)
-				x = append(x, float64(t.off))
-				y = append(y, float64(t.len))
 				stats.num_matches++
 			} else {
 				stats.litlens = append(stats.litlens, t.len)
@@ -395,22 +390,6 @@ func pack(ym_data *ym_streams, file_cfg file_pack_cfg) ([]byte, error) {
 				}
 			}
 		}
-	}
-	if false {
-		scatter_int_map("len.svg", stats.len_map)
-		scatter_int_map("off.svg", stats.dist_map)
-		// offset vs length scatter
-		xy_plot("scatter.svg", x, y)
-
-		linegraph_int("usage.svg", stats.um.counts)
-		sort.Ints(stats.lens)
-		sort.Ints(stats.litlens)
-		sort.Ints(stats.offs)
-		histo("Lens", stats.lens)
-		histo("Offs", stats.offs)
-		histo("LitLens", stats.litlens)
-		fmt.Printf("Lits: %d Matches: %d (%.2f%%)\n", stats.num_tokens-stats.num_matches,
-			stats.num_matches, percent(stats.num_matches, stats.num_tokens))
 	}
 
 	// Group the registers into sets with the same size
@@ -570,16 +549,13 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 
 	min_cachesize := -1
 	min_size := 1 * 1024 * 1024
-	fmt.Print("Collecting stats")
+	fmt.Printf("Collecting stats (%s)", phase)
 	for i := min_i; i <= max_i; i += step {
 		msg := <-messages
 
 		this_size := msg.packedsize
 		total_size := msg.cachesize + this_size
 		fmt.Print(".")
-		//fmt.Printf("Cache size: %d Packed size: %d Total size: %d\n",
-		//	msg.cachesize, this_size, total_size)
-
 		if total_size < min_size {
 			min_size = total_size
 			min_cachesize = msg.regcachesize
@@ -588,8 +564,6 @@ func minpack_find_size(ym_data *ym_streams, min_i int, max_i int, step int, phas
 		size_map[msg.cachesize] = this_size //total_size
 	}
 	fmt.Println()
-
-	//scatter_int_map(phase+".svg", size_map)
 	return min_cachesize, nil
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# This script runs all 3 versions of the compressor on each .ym file
+# This script runs all modes of the compressor on each .ym file
 # in the test_data directory.
 # The output files are named such that it should be easy to compare the
 # output filesize.
@@ -10,8 +10,8 @@ rm -f test_output/*.ymp
 for fname in `cd test_data && ls *.ym*`
 do
 	echo $fname
-	python3 python/miny.py test_data/$fname test_output/$fname.py.ymp > test_output/$fname.py.txt
-	cpp/bin/test test_data/$fname test_output/$fname.cpp.ymp > test_output/$fname.cpp.txt
-	goexp/miny small test_data/$fname test_output/$fname.go.ymp > test_output/$fname.go.txt
+	packer/miny pack test_data/$fname test_output/$fname.pack.ymp > test_output/$fname.pack.txt
+	packer/miny small test_data/$fname test_output/$fname.small.ymp > test_output/$fname.small.txt
+	packer/miny quick test_data/$fname test_output/$fname.quick.ymp > test_output/$fname.quick.txt
 done
 

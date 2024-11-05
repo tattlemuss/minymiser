@@ -26,6 +26,7 @@ jobs:
       run: |
         cd packer
         mkdir bin
+        go get
         GOOS=windows GOARCH=amd64 go build -o bin/miny-amd64-win.exe .
         GOOS=darwin  GOARCH=amd64 go build -o bin/miny-amd64-darwin .
         GOOS=darwin  GOARCH=arm64 go build -o bin/miny-arm64-darwin .

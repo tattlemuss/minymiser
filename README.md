@@ -12,51 +12,51 @@ the stream of YM registers, using a small rolling window of previous frames. Thi
 footprint is limited to the packed file plus a small temporary buffer, rather than storing a larger
 YM dump in memory.
 
-C++ code for a compressor is in the "/packer" directory. It should produce .ymp compressed files.
-The code is a single file and is quite naive, but is essentially a working lzsa compressor. The
-command line is
+The packer aims to reduce the runtime memory used, so files won't appear as small as if you
+used a "normal" packer. But those packers require the entire unpacked file in memory, whereas
+Minymiser only uses a very small cache at runtime (usually less than 5K in size.)
 
-  packer input.ym3 output.ymp
+Packing files
+-------------
 
-... where the input is a YM3-format file, as produced by Hatari amongst others.
+To build the packer, see [packer/README.md](packer/README.md)
 
-"player.s" is example code for playback on a standard Atari ST. It should play back the compressed
-streams in around 3-4 scanlines on an 8MHz machine.
+The packer command-line is of the form `miny <command> <infile> <outfile>`
+
+... where the input is a YM3-format file, as produced by Hatari amongst others. The output is a .ymp
+file that can be used with the playback code in the `player` directory.
+
+The `command` controls how the file is packed.
+
+* `small` generates a file with the smallest combined runtime file + memory cache footprint, but might take more CPU at runtime.
+* `quick` generates a file with higher memory footprint, but will take the least CPU at runtime.
+* `pack` allows you to pack with a custom cache (not recommended)
+
+Playback
+--------
+
+The code in `/player` is example code for playback on a standard Atari ST. It should play back the compressed
+streams in a few scanlines on an 8MHz machine.
 
 The current file format used is to compress each register's data stream separately, so it stores
-14 streams in the file. Each LZ stream has a 512-byte rolling window, so about 10 seconds of data,
-to look back into and store matches. The player decompresses these in real time.
-
-The "/python" directory contains my prototyping area. It tries to compress the files in various ways:
-
-- using "simple" LZ vs LZSA2 format (.ymp vs .ymp2 output)
-- compressing the streams individually, all as a large single group, or as selective groups
-  of registers (e.g. storing registers 0 and 1, the square-wave period of channel A, together)
-- using simple delta-packing with a bitmask to reduce size (the "traditional" way to pack)
-
-The C++ packer and runtime only currently support the "simple" LZ format, and register streams packed
-individually. (It would be good to support LZSA2.) This matches the ".all.ymp" files produced
-by the Python packer.
+14 streams in the file. Each register stream has an individually-sized window to look back into and 
+store matches. The player decompresses these in real time.
 
 File Sizes / Memory
-===================
+-------------------
 
-The LZ methods are around 10%-40% of the size of the delta-packed bitmask, and generally 5-10%
-of the size of the raw .ym file. The compromise to this is the added CPU time to depack, and
-a 5K buffer for the LZ rolling window. The buffer size could easily be adjusted to improve pack
-ratio vs runtime memory.
+The LZ methods are around 10%-40% of the size of the delta-packed bitmask, and generally 5-10% of the size of the raw .ym file. When the runtime buffer is included, this can be up to around 15% sometimes.
 
 Test Data
-=========
+---------
 
-There are 3 test data streams in the repo. Please note that the "motus.ym" file seems to be
-incorrect and some voices are garbled.
+There are 3 test data streams in the repo. Please note that the "motus.ym" file seems to be bad dump,
+and some voices are garbled.
 
 Omissions
-=========
-Only .ym3 input data format is supported.
+---------
 
-Currently the player doesn't support looping the data stream.
+Only .ym3 input data format is supported.
 
 The system doesn't support timer effects like SID. It might be possible to support these with
 extensions to the system.

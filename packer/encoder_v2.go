@@ -48,7 +48,7 @@ func encode_offset_v2(output []byte, offset int) []byte {
 }
 
 // Return the additional cost (in bytes) of adding literal(s) and match to an output stream
-func (e *encoder_v2) cost(lit_count int, m match) int {
+func (e *encoder_v2) cost(lit_count int, m Match) int {
 	cost := 0
 	if lit_count != 0 {
 		// Check if literal count will increase cost
@@ -77,7 +77,7 @@ func (e *encoder_v2) lit_cost(lit_count int) int {
 }
 
 // Calculate the byte cost of only a match
-func (e *encoder_v2) match_cost(m match) int {
+func (e *encoder_v2) match_cost(m Match) int {
 	if m.len == 0 {
 		return 0
 	}
@@ -104,10 +104,10 @@ func (e *encoder_v2) match_cost(m match) int {
 	return cost
 }
 
-func (e *encoder_v2) encode(tokens []token, input []byte) []byte {
+func (e *encoder_v2) encode(tokens []Token, input []byte) []byte {
 	output := make([]byte, 0)
 	for i := 0; i < len(tokens); i++ {
-		var t token = tokens[i]
+		var t Token = tokens[i]
 		if t.is_match {
 			var start_len byte = 0 // "more" marker
 			var start_off byte = 0 // "more" marker
@@ -202,6 +202,6 @@ func (e *encoder_v2) lit(lit_count int) {
 	e.num_literals += lit_count
 }
 
-func (e *encoder_v2) match(m match) {
+func (e *encoder_v2) match(m Match) {
 	e.num_literals = 0
 }

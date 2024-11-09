@@ -23,7 +23,7 @@ func TestEncV2(t *testing.T) {
 	var e encoder_v2
 	for _, tt := range costs {
 		e.num_literals = 0 // reset
-		ans := e.cost(tt.lit, match{tt.matchlen, tt.matchoff})
+		ans := e.cost(tt.lit, Match{tt.matchlen, tt.matchoff})
 		if ans != tt.want {
 			t.Errorf("cost failure: got %d, want %d", ans, tt.want)
 		}
@@ -40,7 +40,7 @@ func TestEncV2(t *testing.T) {
 		if tt.matchlen != 0 {
 			testname := fmt.Sprintf("match_cost %d,%d", tt.matchlen, tt.matchoff)
 			t.Run(testname, func(t *testing.T) {
-				m := match{tt.matchlen, tt.matchoff}
+				m := Match{tt.matchlen, tt.matchoff}
 				ans := e.match_cost(m)
 				if ans != tt.want {
 					t.Errorf("match_cost failure: got %d, want %d", ans, tt.want)

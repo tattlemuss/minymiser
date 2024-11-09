@@ -1,36 +1,20 @@
 package main
 
-func enc_byte(output []byte, value byte) []byte {
-	return append(output, value)
+type Encoder_v1 struct {
+	numLiterals int
 }
 
-func enc_word(output []byte, value uint16) []byte {
-	output = append(output, byte(value>>8))
-	return append(output, byte(value&255))
-}
-
-func enc_long(output []byte, value uint32) []byte {
-	output = append(output, byte(value>>24)&255)
-	output = append(output, byte(value>>16)&255)
-	output = append(output, byte(value>>8)&255)
-	return append(output, byte(value&255))
-}
-
-type encoder_v1 struct {
-	num_literals int
-}
-
-func encode_count(output []byte, count int, literal_flag byte) []byte {
+func encodeCount(output []byte, count int, literalFlag byte) []byte {
 	if count < 128 {
-		output = append(output, byte(count)|literal_flag)
+		output = append(output, byte(count)|literalFlag)
 	} else {
-		output = append(output, 0|literal_flag)
-		output = enc_word(output, uint16(count))
+		output = append(output, 0|literalFlag)
+		output = EncWord(output, uint16(count))
 	}
 	return output
 }
 
-func encode_offset(output []byte, offset int) []byte {
+func encodeOffset(output []byte, offset int) []byte {
 	for offset >= 256 {
 		// 256 can be encoded as "255 + 1"
 		output = append(output, 0)
@@ -39,33 +23,33 @@ func encode_offset(output []byte, offset int) []byte {
 	if offset == 0 {
 		panic("Problem when encoding offset")
 	}
-	output = enc_byte(output, byte(offset))
+	output = EncByte(output, byte(offset))
 	return output
 }
 
-// Return the additional cost (in bytes) of adding literal(s) and match to an output stream
-func (e *encoder_v1) cost(lit_count int, m Match) int {
+// Return the additional Cost (in bytes) of adding literal(s) and match to an output stream
+func (e *Encoder_v1) Cost(litCount int, m Match) int {
 	cost := 0
-	tmp_literals := e.num_literals
-	cost += lit_count
+	tmpLiterals := e.numLiterals
+	cost += litCount
 
 	// Check if literal count will increase cost
-	for i := 0; i < lit_count; i += 1 {
-		if tmp_literals == 0 {
+	for i := 0; i < litCount; i += 1 {
+		if tmpLiterals == 0 {
 			cost += 1 //  // cost of switching match->list
-		} else if tmp_literals == 127 {
+		} else if tmpLiterals == 127 {
 			// cost of swtiching to extra-byte encoing
 			cost += 2 // needs 2 extra bytes
 		}
-		tmp_literals += 1
+		tmpLiterals += 1
 	}
 
-	cost += e.match_cost(m)
+	cost += e.MatchCost(m)
 	return cost
 }
 
 // Calculate the byte cost of only a match
-func (e *encoder_v1) match_cost(m Match) int {
+func (e *Encoder_v1) MatchCost(m Match) int {
 	cost := 0
 	// Match
 	// A match is always new, so apply full cost
@@ -86,16 +70,16 @@ func (e *encoder_v1) match_cost(m Match) int {
 	return cost
 }
 
-func (e *encoder_v1) encode(tokens []Token, input []byte) []byte {
+func (e *Encoder_v1) Encode(tokens []Token, input []byte) []byte {
 	output := make([]byte, 0)
 	for i := 0; i < len(tokens); i += 1 {
 		var t Token = tokens[i]
-		if t.is_match {
-			output = encode_count(output, t.len, 0)
-			output = encode_offset(output, t.off)
+		if t.isMatch {
+			output = encodeCount(output, t.len, 0)
+			output = encodeOffset(output, t.off)
 		} else {
 			// Encode the literal
-			output = encode_count(output, t.len, 0x80)
+			output = encodeCount(output, t.len, 0x80)
 			literals := input[t.off : t.off+t.len]
 			// https://github.com/golang/go/issues/28292
 			output = append(output, literals...)
@@ -104,7 +88,7 @@ func (e *encoder_v1) encode(tokens []Token, input []byte) []byte {
 	return output
 }
 
-func (e *encoder_v1) unpack(input []byte) []byte {
+func (e *Encoder_v1) Decode(input []byte) []byte {
 	output := make([]byte, 0)
 	head := 0
 	for head < len(input) {
@@ -137,10 +121,10 @@ func (e *encoder_v1) unpack(input []byte) []byte {
 			}
 			offset += int(input[head])
 			head++
-			match_pos := len(output) - offset
+			matchPos := len(output) - offset
 			for count > 0 {
-				output = append(output, output[match_pos])
-				match_pos++
+				output = append(output, output[matchPos])
+				matchPos++
 				count--
 			}
 		}
@@ -148,10 +132,10 @@ func (e *encoder_v1) unpack(input []byte) []byte {
 	return output
 }
 
-func (e *encoder_v1) lit(lit_count int) {
-	e.num_literals += lit_count
+func (e *Encoder_v1) ApplyLit(litCount int) {
+	e.numLiterals += litCount
 }
 
-func (e *encoder_v1) match(m Match) {
-	e.num_literals = 0
+func (e *Encoder_v1) ApplyMatch(m Match) {
+	e.numLiterals = 0
 }

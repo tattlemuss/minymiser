@@ -23,6 +23,9 @@ var registerNames = [numRegs]string{
 
 var ym3Header = []byte{'Y', 'M', '3', '!'}
 
+// Contains a single stream of packed or unpacked data.
+type ByteSlice []byte
+
 // Create a byte slice of size 0
 func EmptySlice() []byte {
 	return make([]byte, 0)
@@ -55,11 +58,27 @@ func Sum(arr []int) int {
 	return sum
 }
 
+func EncByte(output []byte, value byte) []byte {
+	return append(output, value)
+}
+
+func EncWord(output []byte, value uint16) []byte {
+	output = append(output, byte(value>>8))
+	return append(output, byte(value&255))
+}
+
+func EncLong(output []byte, value uint32) []byte {
+	output = append(output, byte(value>>24)&255)
+	output = append(output, byte(value>>16)&255)
+	output = append(output, byte(value>>8)&255)
+	return append(output, byte(value&255))
+}
+
 // Describes a match or a series of literals.
 type Token struct {
-	is_match bool
-	len      int // length in bytes
-	off      int // reverse offset if is_match, abs position if literal
+	isMatch bool
+	len     int // length in bytes
+	off     int // reverse offset if isMatch, abs position if literal
 }
 
 // Describes a Match run.
@@ -68,128 +87,101 @@ type Match struct {
 	off int
 }
 
-// Contains a single stream of packed data.
-type PackedData struct {
-	data []byte
-}
-
 // Raw unpacked data for all the registers, plus tune length.
 type YmStreams struct {
 	// A binary array for each register to pack
-	register  [numRegs]PackedData
-	num_vbls  int // size of each packedstream
-	data_size int // sum of sizes of all register arrays
+	register [numRegs]ByteSlice
+	numVbls  int // size of each packedstream
+	dataSize int // sum of sizes of all register arrays
 }
 
 // Interface for being able to encode a stream into a packed format.
 type Encoder interface {
-	// Calculate the cost for adding literals or matches, or both
-	cost(lit_count int, m Match) int
+	// Calculate the Cost for adding literals or matches, or both
+	Cost(litCount int, m Match) int
 
 	// Apply N literals to the internal state
-	lit(lit_count int)
-	// Apply a match to the internal state
-	match(m Match)
+	ApplyLit(litCount int)
+	// Apply a ApplyMatch to the internal state
+	ApplyMatch(m Match)
 
 	// Encodes all the given tokens into a binary stream.
-	encode(tokens []Token, input []byte) []byte
+	Encode(tokens []Token, input []byte) []byte
 
 	// Unpacks the given packed binary stream.
-	unpack(input []byte) []byte
+	Decode(input []byte) []byte
 }
 
 // Describes packing config for a whole file
 type FilePackConfig struct {
-	cache_sizes []int // cache size for each individual reg
-	verbose     bool
-	verify      bool
-	report      bool // print output report to stdout
-	encoder     int  // 1 or 2
+	cacheSizes []int // cache size for each individual reg
+	verbose    bool
+	verify     bool
+	report     bool // print output report to stdout
+	encoder    int  // 1 or 2
 }
 
 // Describes packing config for a single register stream
 type StreamPackCfg struct {
-	buffer_size int // cache size for just this stream
-	verbose     bool
-}
-
-type usage_map struct {
-	counts []int // number of backrefs
-}
-
-func analyse_usages(data []byte, um *usage_map) {
-	last_usage := [256]int{}
-	for i := range last_usage {
-		last_usage[i] = -1
-	}
-
-	for i := range data {
-		val := data[i]
-		if last_usage[val] >= 0 {
-			distance := i - last_usage[val]
-			if distance >= 3 && distance < len(um.counts) {
-				um.counts[distance]++
-			}
-		}
-		last_usage[val] = i
-	}
+	bufferSize int // cache size for just this stream
+	verbose    bool
 }
 
 func FindLongestMatch(data []byte, head int, distance int) Match {
-	best_offset := -1
-	best_length := 0
-	max_dist := distance
+	bestOffset := -1
+	bestLength := 0
+	maxDist := distance
 	if head < distance {
-		max_dist = head
+		maxDist = head
 	}
 
-	for offset := 1; offset <= max_dist; offset++ {
+	for offset := 1; offset <= maxDist; offset++ {
 		length := 0
-		check_pos := head - offset
-		for head+length < len(data) && data[check_pos+length] == data[head+length] {
+		checkPos := head - offset
+		for head+length < len(data) && data[checkPos+length] == data[head+length] {
 			length++
 		}
-		if length >= 3 && length > best_length {
-			best_length = length
-			best_offset = offset
+		if length >= 3 && length > bestLength {
+			bestLength = length
+			bestOffset = offset
 		}
 	}
-	return Match{len: best_length, off: best_offset}
+	return Match{len: bestLength, off: bestOffset}
 }
 
 func FindCheapestMatch(enc Encoder, data []byte, head int, distance int) Match {
-	best_match := Match{0, 0}
+	bestMatch := Match{0, 0}
 	// Any pack rate of less than 1.0 is automatically useless!
-	var best_cost float64 = 1.0
-	max_dist := distance
+	var bestCost float64 = 1.0
+	maxDist := distance
 	if head < distance {
-		max_dist = head
+		maxDist = head
 	}
-	for offset := 1; offset <= max_dist; offset++ {
+	for offset := 1; offset <= maxDist; offset++ {
 		length := 0
-		check_pos := head - offset
-		for head+length < len(data) && data[check_pos+length] == data[head+length] {
+		checkPos := head - offset
+		for head+length < len(data) && data[checkPos+length] == data[head+length] {
 			length++
 		}
 		if length >= 3 {
 			m := Match{len: length, off: offset}
-			mc := float64(enc.cost(0, m)) / float64(length)
-			if mc < best_cost {
-				best_cost = mc
-				best_match = m
+			mc := float64(enc.Cost(0, m)) / float64(length)
+			if mc < bestCost {
+				bestCost = mc
+				bestMatch = m
 			}
 		}
 	}
-	return best_match
+	return bestMatch
 }
 
 // Add a number of literals to a set of tokens.
 // If the last entry was a match, create a new token to
 // represent them
 func AddLiterals(tokens []Token, count int, pos int) []Token {
-	last_index := len(tokens) - 1
-	if last_index >= 0 && !tokens[last_index].is_match {
-		tokens[last_index].len++
+	lastIndex := len(tokens) - 1
+	if lastIndex >= 0 && !tokens[lastIndex].isMatch {
+		tokens[lastIndex].len++
 	} else {
 		return append(tokens, Token{false, count, pos})
 	}
@@ -200,83 +192,82 @@ func TokenizeGreedy(enc Encoder, data []byte, cfg StreamPackCfg) []byte {
 	var tokens []Token
 
 	head := 0
-	match_bytes := 0
-	lit_bytes := 0
+	matchBytes := 0
+	litBytes := 0
 
 	for head < len(data) {
-		//best := find_cheapest_match(enc, data, head, buffer_size)
-		best := FindLongestMatch(data, head, cfg.buffer_size)
+		best := FindLongestMatch(data, head, cfg.bufferSize)
 		if best.len != 0 {
 			head += best.len
 			tokens = append(tokens, Token{true, best.len, best.off})
-			match_bytes += best.len
+			matchBytes += best.len
 		} else {
 			// Literal
 			tokens = AddLiterals(tokens, 1, head)
 			head++ // literal
-			lit_bytes++
+			litBytes++
 		}
 	}
 	if cfg.verbose {
-		fmt.Printf("\tGreedy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
-			Percent(match_bytes, lit_bytes+match_bytes))
+		fmt.Printf("\tGreedy: Matches %v Literals %v (%.2f%%)\n", matchBytes, litBytes,
+			Percent(matchBytes, litBytes+matchBytes))
 	}
-	return enc.encode(tokens, data)
+	return enc.Encode(tokens, data)
 }
 
-func TokenizeLazy(enc Encoder, data []byte, use_cheapest bool, cfg StreamPackCfg) []Token {
+func TokenizeLazy(enc Encoder, data []byte, useCheapest bool, cfg StreamPackCfg) []Token {
 	var tokens []Token
 
-	used_match := 0
-	used_matchlit := 0
-	used_second := 0
-	match_bytes := 0
-	lit_bytes := 0
+	usedMatch := 0
+	usedMatchlit := 0
+	usedSecond := 0
+	matchBytes := 0
+	litBytes := 0
 	head := 0
 
 	var best0 Match
 	var best1 Match
-	buffer_size := cfg.buffer_size
+	bufferSize := cfg.bufferSize
 	for head < len(data) {
-		if use_cheapest {
-			best0 = FindCheapestMatch(enc, data, head, buffer_size)
+		if useCheapest {
+			best0 = FindCheapestMatch(enc, data, head, bufferSize)
 		} else {
-			best0 = FindLongestMatch(data, head, buffer_size)
+			best0 = FindLongestMatch(data, head, bufferSize)
 		}
-		choose_lit := best0.len == 0
+		chooseLit := best0.len == 0
 
 		// We have 2 choices really
 		// Apply 0 (as a match or a literal)
 		// Apply literal 0 (and check the next byte for a match)
-		if !choose_lit {
+		if !chooseLit {
 			// See if doing N literals is smaller
-			cost0 := enc.cost(0, best0)
-			cost_lit := enc.cost(best0.len, Match{})
-			if cost_lit < cost0 {
-				choose_lit = true
-				used_matchlit++
+			cost0 := enc.Cost(0, best0)
+			costLit := enc.Cost(best0.len, Match{})
+			if costLit < cost0 {
+				chooseLit = true
+				usedMatchlit++
 			}
 		}
 
-		if !choose_lit {
-			used_match++
+		if !chooseLit {
+			usedMatch++
 			// We only need to decide to choose the second match, if both
 			// 0 and 1 are matches rather than literals.
 			if best0.len != 0 && head+1 < len(data) {
-				if use_cheapest {
-					best1 = FindCheapestMatch(enc, data, head+1, buffer_size)
+				if useCheapest {
+					best1 = FindCheapestMatch(enc, data, head+1, bufferSize)
 				} else {
-					best1 = FindLongestMatch(data, head+1, buffer_size)
+					best1 = FindLongestMatch(data, head+1, bufferSize)
 				}
 				if best1.len != 0 {
-					cost0 := enc.cost(0, best0)
-					cost1 := enc.cost(1, best1)
+					cost0 := enc.Cost(0, best0)
+					cost1 := enc.Cost(1, best1)
 					rate0 := Ratio(cost0, best0.len)
 					rate1 := Ratio(cost1, 1+best1.len)
 					if rate1 < rate0 {
-						choose_lit = true
-						used_match--
-						used_second++
+						chooseLit = true
+						usedMatch--
+						usedSecond++
 					}
 				}
 			}
@@ -284,26 +275,26 @@ func TokenizeLazy(enc Encoder, data []byte, use_cheapest bool, cfg StreamPackCfg
 
 		// Add the decision to the token stream,
 		// and update the encoder's state so it can update future encoding costs.
-		if choose_lit {
+		if chooseLit {
 			// Literal
 			tokens = AddLiterals(tokens, 1, head)
 			head++
-			enc.lit(1)
-			lit_bytes++
+			enc.ApplyLit(1)
+			litBytes++
 		} else {
 			head += best0.len
 			tokens = append(tokens, Token{true, best0.len, best0.off})
-			used_match++
-			enc.match(best0)
-			match_bytes += best0.len
+			usedMatch++
+			enc.ApplyMatch(best0)
+			matchBytes += best0.len
 		}
 	}
 
 	if cfg.verbose {
-		fmt.Printf("\tLazy: Matches %v Literals %v (%.2f%%)\n", match_bytes, lit_bytes,
-			Percent(match_bytes, lit_bytes+match_bytes))
-		fmt.Println("\tLazy: Used match:", used_match, "used matchlit:", used_matchlit,
-			"used second", used_second)
+		fmt.Printf("\tLazy: Matches %v Literals %v (%.2f%%)\n", matchBytes, litBytes,
+			Percent(matchBytes, litBytes+matchBytes))
+		fmt.Println("\tLazy: Used match:", usedMatch, "used matchlit:", usedMatchlit,
+			"used second", usedSecond)
 	}
 
 	return tokens
@@ -316,104 +307,102 @@ func CreateYmStreams(data []byte) (YmStreams, error) {
 		return YmStreams{}, errors.New("not a YM3 file")
 	}
 
-	data_size := len(data) - 4
-	if data_size%numRegs != 0 {
+	dataSize := len(data) - 4
+	if dataSize%numRegs != 0 {
 		return YmStreams{}, errors.New("unexpected data size")
 	}
 	// Convert to memory types
-	data_size_per_reg := data_size / numRegs
+	numVbls := dataSize / numRegs
 	ym3 := YmStreams{}
-	ym3.num_vbls = data_size_per_reg
-	ym3.data_size = data_size
+	ym3.numVbls = numVbls
+	ym3.dataSize = dataSize
 	for reg := 0; reg < numRegs; reg++ {
 		// Split register data
-		start_pos := 4 + reg*data_size_per_reg
-		ym3.register[reg].data = data[start_pos : start_pos+data_size_per_reg]
+		startPos := 4 + reg*numVbls
+		ym3.register[reg] = data[startPos : startPos+numVbls]
 	}
 	return ym3, nil
 }
 
 // Load an input file and create the ym_streams data object.
-func LoadStreamFile(input_path string) (YmStreams, error) {
-	dat, err := os.ReadFile(input_path)
+func LoadStreamFile(inputPath string) (YmStreams, error) {
+	dat, err := os.ReadFile(inputPath)
 	if err != nil {
 		return YmStreams{}, err
 	}
 
-	ym_data, err := CreateYmStreams(dat)
-	return ym_data, err
+	ymStreams, err := CreateYmStreams(dat)
+	return ymStreams, err
 }
 
 // General packing statistics
 type PackStats struct {
-	um          usage_map
-	len_map     map[int]int
-	dist_map    map[int]int
-	offs        []int
-	lens        []int
-	litlens     []int
-	num_matches int
-	num_tokens  int
+	lenMap     map[int]int // length -> count
+	distMap    map[int]int // dist -> cound
+	offs       []int
+	lens       []int
+	litlens    []int
+	numNatches int
+	numTokens  int
 }
 
 // Core function to ack a YM3 data file and return an encoded array of bytes.
-func PackAll(ym_data *YmStreams, file_cfg FilePackConfig) ([]byte, error) {
+func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	// Compression settings
-	use_cheapest := false
+	useCheapest := false
 
-	stream_cfg := StreamPackCfg{}
-	stream_cfg.verbose = file_cfg.verbose
-	packed_streams := make([]PackedData, numRegs)
+	streamCfg := StreamPackCfg{}
+	streamCfg.verbose = fileCfg.verbose
+	packedStreams := make([]ByteSlice, numRegs)
 
 	var stats PackStats
-	stats.len_map = make(map[int]int)
-	stats.dist_map = make(map[int]int)
+	stats.lenMap = make(map[int]int)
+	stats.distMap = make(map[int]int)
 
 	for reg := 0; reg < numRegs; reg++ {
-		stream_cfg.buffer_size = file_cfg.cache_sizes[reg]
-		if file_cfg.verbose {
+		streamCfg.bufferSize = fileCfg.cacheSizes[reg]
+		if fileCfg.verbose {
 			fmt.Println("Packing register", reg, registerNames[reg])
 		}
 		// Pack
 		var enc Encoder
-		if file_cfg.encoder == 1 {
-			enc = &encoder_v1{0}
-		} else if file_cfg.encoder == 2 {
-			enc = &encoder_v2{0}
+		if fileCfg.encoder == 1 {
+			enc = &Encoder_v1{0}
+		} else if fileCfg.encoder == 2 {
+			enc = &Encoder_v2{0}
 		} else {
-			return EmptySlice(), fmt.Errorf("unknown encoder ID: (%d)", file_cfg.encoder)
+			return EmptySlice(), fmt.Errorf("unknown encoder ID: (%d)", fileCfg.encoder)
 		}
-		reg_data := ym_data.register[reg].data
-		packed := &packed_streams[reg].data
+		regData := ymData.register[reg]
+		packed := &packedStreams[reg]
 
-		analyse_usages(reg_data, &stats.um)
-		tokens := TokenizeLazy(enc, reg_data, use_cheapest, stream_cfg)
-		*packed = enc.encode(tokens, reg_data)
+		tokens := TokenizeLazy(enc, regData, useCheapest, streamCfg)
+		*packed = enc.Encode(tokens, regData)
 
 		// Graph histogram
 		for i := range tokens {
 			t := &tokens[i]
-			if t.is_match {
+			if t.isMatch {
 				if t.len < 512 {
-					stats.len_map[t.len]++
+					stats.lenMap[t.len]++
 				}
-				stats.dist_map[t.off]++
+				stats.distMap[t.off]++
 				stats.offs = append(stats.offs, t.off)
 				stats.lens = append(stats.lens, t.len)
-				stats.num_matches++
+				stats.numNatches++
 			} else {
 				stats.litlens = append(stats.litlens, t.len)
 			}
 		}
-		stats.num_tokens += len(tokens)
+		stats.numTokens += len(tokens)
 
 		// Verify by unpacking
-		if file_cfg.verify {
-			unpacked := enc.unpack(*packed)
-			if !reflect.DeepEqual(reg_data, unpacked) {
+		if fileCfg.verify {
+			unpacked := enc.Decode(*packed)
+			if !reflect.DeepEqual(regData, unpacked) {
 				return EmptySlice(), errors.New("failed to verify pack<->unpack round trip, there is a bug")
 			} else {
-				if file_cfg.verbose {
+				if fileCfg.verbose {
 					fmt.Println("\tVerify OK")
 				}
 			}
@@ -423,7 +412,7 @@ func PackAll(ym_data *YmStreams, file_cfg FilePackConfig) ([]byte, error) {
 	// Group the registers into sets with the same size
 	sets := make(map[int][]int)
 	for reg := 0; reg < numRegs; reg++ {
-		sets[file_cfg.cache_sizes[reg]] = append(sets[file_cfg.cache_sizes[reg]], reg)
+		sets[fileCfg.cacheSizes[reg]] = append(sets[fileCfg.cacheSizes[reg]], reg)
 	}
 
 	// Calc mapping of YM reg->stream in the file
@@ -431,226 +420,228 @@ func PackAll(ym_data *YmStreams, file_cfg FilePackConfig) ([]byte, error) {
 
 	// We will output the registers to the file, ordered by set
 	// and flattened.
-	reg_order := make([]byte, numRegs)
+	regOrder := make([]byte, numRegs)
 	// The inverse order is used at runtime to map from YM reg
 	// to depacked stream in the file.
-	inverse_reg_order := make([]byte, numRegs)
+	inverseRegOrder := make([]byte, numRegs)
 
-	set_header_data := []byte{}
-	var stream_id byte = 0
-	for cache_size, set := range sets {
+	// Data repreesenting the set configuration
+	setHeaderData := []byte{}
+	var streamId byte = 0
+	for cacheSize, set := range sets {
 		// Loop
-		set_header_data = enc_word(set_header_data, uint16(len(set)-1))
-		set_header_data = enc_word(set_header_data, uint16(cache_size))
+		setHeaderData = EncWord(setHeaderData, uint16(len(set)-1))
+		setHeaderData = EncWord(setHeaderData, uint16(cacheSize))
 		for _, reg := range set {
-			inverse_reg_order[reg] = stream_id
-			reg_order[stream_id] = byte(reg)
-			stream_id++
+			inverseRegOrder[reg] = streamId
+			regOrder[streamId] = byte(reg)
+			streamId++
 		}
 	}
-	set_header_data = enc_word(set_header_data, uint16(0xffff))
+	setHeaderData = EncWord(setHeaderData, uint16(0xffff))
 
 	// Number of bytes required by the set data
 	// 4 bytes per set -- loop count, cache size
 	// 2 bytes -- end sentinel
-	if len(set_header_data) != 2+(4*len(sets)) {
+	if len(setHeaderData) != 2+(4*len(sets)) {
 		panic("header size mismatch")
 	}
 
 	// Generate the final data
-	output_data := make([]byte, 0)
+	outputData := make([]byte, 0)
 
 	// Calc overall header size
-	header_size := 2 + // header
+	headerSize := 2 + // header
 		2 + // cache size
 		2 + // num vbls
 		numRegs + // register order
 		4*numRegs + // offsets to packed streams
-		len(set_header_data) // set information
+		len(setHeaderData) // set information
 
 	// Header: "Y" + 0x1 (version)
-	output_data = enc_byte(output_data, 'Y')
-	output_data = enc_byte(output_data, 0x1)
+	outputData = EncByte(outputData, 'Y')
+	outputData = EncByte(outputData, 0x1)
 
 	// 0) Output required cache size (for user reference)
-	output_data = enc_word(output_data, uint16(Sum(file_cfg.cache_sizes)))
+	outputData = EncWord(outputData, uint16(Sum(fileCfg.cacheSizes)))
 
 	// 1) Output size in VBLs
-	output_data = enc_word(output_data, uint16(ym_data.num_vbls))
+	outputData = EncWord(outputData, uint16(ymData.numVbls))
 
 	// 2) Order of registers
-	output_data = append(output_data, inverse_reg_order...)
+	outputData = append(outputData, inverseRegOrder...)
 
-	data_pos := header_size
+	dataPos := headerSize
 	// Offsets to register data
-	for _, reg := range reg_order {
-		output_data = enc_long(output_data, uint32(data_pos))
-		data_pos += len(packed_streams[reg].data)
+	for _, reg := range regOrder {
+		outputData = EncLong(outputData, uint32(dataPos))
+		dataPos += len(packedStreams[reg])
 	}
 	// Set data
-	output_data = append(output_data, set_header_data...)
+	outputData = append(outputData, setHeaderData...)
 
-	if len(output_data) != header_size {
+	if len(outputData) != headerSize {
 		panic("header size mismatch 2")
 	}
 
 	// ... then the data
-	for _, reg := range reg_order {
-		output_data = append(output_data, packed_streams[reg].data...)
+	for _, reg := range regOrder {
+		outputData = append(outputData, packedStreams[reg]...)
 	}
 
-	if file_cfg.report {
-		orig_size := ym_data.data_size
-		packed_size := len(output_data)
-		cache_size := Sum(file_cfg.cache_sizes)
-		total_size := cache_size + packed_size
+	if fileCfg.report {
+		origSize := ymData.dataSize
+		packedSize := len(outputData)
+		cacheSize := Sum(fileCfg.cacheSizes)
+		totalSize := cacheSize + packedSize
 		fmt.Println("===== Complete =====")
-		fmt.Printf("Original size:    %6d\n", orig_size)
-		fmt.Printf("Packed size:      %6d (%.1f%%)\n", packed_size, Percent(packed_size, orig_size))
+		fmt.Printf("Original size:    %6d\n", origSize)
+		fmt.Printf("Packed size:      %6d (%.1f%%)\n", packedSize, Percent(packedSize, origSize))
 		fmt.Printf("Num cache sizes:  %6d (smaller=faster)\n", len(sets))
-		fmt.Printf("Total cache size: %6d\n", cache_size)
-		fmt.Printf("Total RAM:        %6d (%.1f%%)\n", total_size, Percent(total_size, orig_size))
+		fmt.Printf("Total cache size: %6d\n", cacheSize)
+		fmt.Printf("Total RAM:        %6d (%.1f%%)\n", totalSize, Percent(totalSize, origSize))
 	}
 
-	return output_data, nil
+	return outputData, nil
 }
 
 // Pack a file with custom config like cache size.
-func CommandCustom(input_path string, output_path string, file_cfg FilePackConfig) error {
-	ym_data, err := LoadStreamFile(input_path)
+func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) error {
+	ymData, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
 	}
 
-	file_cfg.report = true
-	packed_data, err := PackAll(&ym_data, file_cfg)
+	fileCfg.report = true
+	packedData, err := PackAll(&ymData, fileCfg)
 	if err != nil {
 		return err
 	}
 
-	err = os.WriteFile(output_path, packed_data, 0644)
+	err = os.WriteFile(outputPath, packedData, 0644)
 	return err
 }
 
 type MinpackResult struct {
-	regcachesize int
-	cachesize    int
-	packedsize   int
+	regCacheSize int // size of cache for a single register
+	cacheSize    int // total size of all caches added together
+	packedSize   int
 }
 
 // Choose the cache size which gives minimal sum of
 // [packed file size] + [cache size]
-func MinpackFindCacheSize(ym_data *YmStreams, min_i int, max_i int, step int, phase string) (int, error) {
+func MinpackFindCacheSize(ymData *YmStreams, minCacheSize int, maxCacheSize int,
+	cacheSizeStep int, phase string) (int, error) {
 	messages := make(chan MinpackResult, 5)
 
 	// Async func to pack the file and return sizes
-	find_packed_size_func := func(regcachesize int, ym_data *YmStreams, cfg FilePackConfig) {
-		packed_data, err := PackAll(ym_data, cfg)
+	FindPackedSizeFunc := func(regCacheSize int, ymData *YmStreams, cfg FilePackConfig) {
+		packedData, err := PackAll(ymData, cfg)
 		if err != nil {
 			fmt.Println(err)
 			messages <- MinpackResult{0, 0, 0}
 		} else {
-			messages <- MinpackResult{regcachesize, Sum(cfg.cache_sizes), len(packed_data)}
+			messages <- MinpackResult{regCacheSize, Sum(cfg.cacheSizes), len(packedData)}
 		}
 	}
 
 	// Launch the async packers
-	for i := min_i; i <= max_i; i += step {
+	for cacheSize := minCacheSize; cacheSize <= maxCacheSize; cacheSize += cacheSizeStep {
 		cfg := FilePackConfig{}
-		cfg.cache_sizes = FilledSlice(numRegs, i)
+		cfg.cacheSizes = FilledSlice(numRegs, cacheSize)
 		cfg.verbose = false
 		cfg.encoder = 1
-		go find_packed_size_func(i, ym_data, cfg)
+		go FindPackedSizeFunc(cacheSize, ymData, cfg)
 	}
 
 	// Receive results and find the smallest
-	size_map := make(map[int]int)
+	sizeMap := make(map[int]int)
 
-	min_cachesize := -1
-	min_size := 1 * 1024 * 1024
+	smallestCacheSize := -1
+	smallestTotalSize := 1 * 1024 * 1024
 	fmt.Printf("Collecting stats (%s)", phase)
-	for i := min_i; i <= max_i; i += step {
+	for i := minCacheSize; i <= maxCacheSize; i += cacheSizeStep {
 		msg := <-messages
 
-		this_size := msg.packedsize
-		total_size := msg.cachesize + this_size
+		thisSize := msg.packedSize
+		totalSize := msg.cacheSize + thisSize
 		fmt.Print(".")
-		if total_size < min_size {
-			min_size = total_size
-			min_cachesize = msg.regcachesize
+		if totalSize < smallestTotalSize {
+			smallestTotalSize = totalSize
+			smallestCacheSize = msg.regCacheSize
 		}
 
-		size_map[msg.cachesize] = this_size //total_size
+		sizeMap[msg.cacheSize] = thisSize //totalSize
 	}
 	fmt.Println()
-	return min_cachesize, nil
+	return smallestCacheSize, nil
 }
 
 // Pack file to be played back with low CPU (single cache size for
 // all registers)
-func CommandQuick(input_path string, output_path string) error {
-	ym_data, err := LoadStreamFile(input_path)
+func CommandQuick(inputPath string, outputPath string) error {
+	ymData, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("---- Pass 1 ----")
-	min_cachesize, err := MinpackFindCacheSize(&ym_data, 64, 1024, 32, "broad")
+	smallestCacheSize, err := MinpackFindCacheSize(&ymData, 64, 1024, 32, "broad")
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("---- Pass 2 ----")
-	min_cachesize, err = MinpackFindCacheSize(&ym_data, min_cachesize-32,
-		min_cachesize+32, 2, "narrow")
+	smallestCacheSize, err = MinpackFindCacheSize(&ymData, smallestCacheSize-32,
+		smallestCacheSize+32, 2, "narrow")
 	if err != nil {
 		return err
 	}
 
-	file_cfg := FilePackConfig{}
-	file_cfg.verbose = false
-	file_cfg.cache_sizes = FilledSlice(numRegs, min_cachesize)
-	file_cfg.encoder = 1
-	file_cfg.report = true
-	packed_data, err := PackAll(&ym_data, file_cfg)
+	fileCfg := FilePackConfig{}
+	fileCfg.verbose = false
+	fileCfg.cacheSizes = FilledSlice(numRegs, smallestCacheSize)
+	fileCfg.encoder = 1
+	fileCfg.report = true
+	packedData, err := PackAll(&ymData, fileCfg)
 	if err != nil {
 		return err
 	}
 
-	err = os.WriteFile(output_path, packed_data, 0644)
+	err = os.WriteFile(outputPath, packedData, 0644)
 	return err
 }
 
 // Records resulting size for a pack of a single register stream, for
 // a given cache size.
 type RegPackSizes struct {
-	reg        int
-	cache_size int
-	total_size int
+	reg       int
+	cacheSize int
+	totalSize int
 }
 
 // Records how big every register packs to, given a seris of cache sizes.
 type PerRegStats struct {
-	// key is the cache size, value is array of total_packed_sizes for each reg
-	total_packed_sizes map[int]([]int)
+	// key is the tried cache size, value is array of totalPackedSizes for each reg
+	totalPackedSizes map[int]([]int)
 }
 
 func FindSmallestTotalSize(stats *PerRegStats, regs []RegPackSizes) (int, int) {
-	min_total := 99999999999
-	min_index := -1
+	smallestTotal := 99999999999
+	smallestIndex := -1
 
-	for key := range stats.total_packed_sizes {
+	for key := range stats.totalPackedSizes {
 		// Create total cost
-		total_cost := 0
+		totalCost := 0
 		for j := range regs {
-			total_cost += stats.total_packed_sizes[key][regs[j].reg]
+			totalCost += stats.totalPackedSizes[key][regs[j].reg]
 		}
-		if total_cost < min_total {
-			min_total = total_cost
-			min_index = key
+		if totalCost < smallestTotal {
+			smallestTotal = totalCost
+			smallestIndex = key
 		}
 	}
-	return min_index, min_total
+	return smallestIndex, smallestTotal
 }
 
 // Result for a single attempt at packing a register stream with
@@ -658,41 +649,41 @@ func FindSmallestTotalSize(stats *PerRegStats, regs []RegPackSizes) (int, int) {
 // TODO share with RegPackSizes?
 type SmallResult struct {
 	reg        int
-	cachesize  int
-	packedsize int
+	cacheSize  int
+	packedSize int
 }
 
-func CommandSmall(input_path string, output_path string) error {
-	ym_data, err := LoadStreamFile(input_path)
+func CommandSmall(inputPath string, outputPath string) error {
+	ymData, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
 	}
 
 	stats := PerRegStats{}
-	stats.total_packed_sizes = make(map[int][]int)
-	min_size := 8
-	max_size := 1024
+	stats.totalPackedSizes = make(map[int][]int)
+	minSize := 8
+	maxSize := 1024
 	step := 16
-	for size := min_size; size < max_size; size += step {
-		stats.total_packed_sizes[size] = make([]int, numRegs)
+	for size := minSize; size < maxSize; size += step {
+		stats.totalPackedSizes[size] = make([]int, numRegs)
 	}
 
 	messages := make(chan SmallResult, 15)
 
 	// Async func to pack the file and return sizes
-	find_packed_size_func := func(reg int, regcachesize int, ym_data *YmStreams) {
-		enc := encoder_v1{0}
+	FindPackedSizeFunc := func(reg int, regCacheSize int, ymData *YmStreams) {
+		enc := Encoder_v1{0}
 		var cfg StreamPackCfg
-		cfg.buffer_size = regcachesize
+		cfg.bufferSize = regCacheSize
 		cfg.verbose = false
-		reg_data := ym_data.register[reg].data
-		tokens := TokenizeLazy(&enc, reg_data, true, cfg)
-		packed_data := enc.encode(tokens, reg_data)
+		regData := ymData.register[reg]
+		tokens := TokenizeLazy(&enc, regData, true, cfg)
+		packedData := enc.Encode(tokens, regData)
 		if err != nil {
 			fmt.Println(err)
 			messages <- SmallResult{reg, 0, 0}
 		} else {
-			messages <- SmallResult{reg, regcachesize, len(packed_data)}
+			messages <- SmallResult{reg, regCacheSize, len(packedData)}
 		}
 	}
 
@@ -701,68 +692,68 @@ func CommandSmall(input_path string, output_path string) error {
 		fmt.Print(".")
 
 		// Launch...
-		for size := min_size; size < max_size; size += step {
-			go find_packed_size_func(reg, size, &ym_data)
+		for size := minSize; size < maxSize; size += step {
+			go FindPackedSizeFunc(reg, size, &ymData)
 		}
 
 		// ... Collect.
-		for size := min_size; size < max_size; size += step {
+		for size := minSize; size < maxSize; size += step {
 			msg := <-messages
-			csize := msg.cachesize
-			total := msg.cachesize + msg.packedsize
-			stats.total_packed_sizes[csize][reg] = total
+			csize := msg.cacheSize
+			total := msg.cacheSize + msg.packedSize
+			stats.totalPackedSizes[csize][reg] = total
 		}
 
 	}
 	fmt.Println()
 
-	best_total_size := 0
-	best_cache_size := 0
+	bestTotalSize := 0
+	bestCacheSize := 0
 
-	stats_for_regs := make([]RegPackSizes, 0)
-	var minimal_cfg FilePackConfig
-	minimal_cfg.encoder = 1
-	minimal_cfg.verbose = false
-	minimal_cfg.verify = false
-	minimal_cfg.report = true
-	minimal_cfg.cache_sizes = make([]int, numRegs)
+	statsForRegs := make([]RegPackSizes, 0)
+	var smallCfg FilePackConfig
+	smallCfg.encoder = 1
+	smallCfg.verbose = false
+	smallCfg.verify = false
+	smallCfg.report = true
+	smallCfg.cacheSizes = make([]int, numRegs)
 
 	for reg := 0; reg < numRegs; reg++ {
-		min_total := 9999999
-		min_cache := min_total
+		minTotal := 9999999
+		minCache := minTotal
 
-		for csize := range stats.total_packed_sizes {
-			total := stats.total_packed_sizes[csize][reg]
-			if total < min_total {
-				min_total = total
-				min_cache = csize
+		for csize := range stats.totalPackedSizes {
+			total := stats.totalPackedSizes[csize][reg]
+			if total < minTotal {
+				minTotal = total
+				minCache = csize
 			}
 		}
-		best_total_size += min_total
-		best_cache_size += min_cache
-		stats_for_regs = append(stats_for_regs, RegPackSizes{reg, min_cache, min_total})
+		bestTotalSize += minTotal
+		bestCacheSize += minCache
+		statsForRegs = append(statsForRegs, RegPackSizes{reg, minCache, minTotal})
 
-		minimal_cfg.cache_sizes[reg] = min_cache
+		smallCfg.cacheSizes[reg] = minCache
 	}
 
-	sort.Slice(stats_for_regs, func(i, j int) bool {
-		if stats_for_regs[i].cache_size != stats_for_regs[j].cache_size {
-			return stats_for_regs[i].cache_size < stats_for_regs[j].cache_size
+	sort.Slice(statsForRegs, func(i, j int) bool {
+		if statsForRegs[i].cacheSize != statsForRegs[j].cacheSize {
+			return statsForRegs[i].cacheSize < statsForRegs[j].cacheSize
 		}
-		return stats_for_regs[i].total_size < stats_for_regs[j].total_size
+		return statsForRegs[i].totalSize < statsForRegs[j].totalSize
 	})
 
 	// Now we can grade the streams based on who needs the biggest cache
 	for i := 0; i < numRegs; i++ {
-		reg := stats_for_regs[i].reg
-		fmt.Printf("Reg %2d Needs cache %4d -> Total size %5d (%s)\n", reg, stats_for_regs[i].cache_size,
-			stats_for_regs[i].total_size,
+		reg := statsForRegs[i].reg
+		fmt.Printf("Reg %2d Needs cache %4d -> Total size %5d (%s)\n", reg, statsForRegs[i].cacheSize,
+			statsForRegs[i].totalSize,
 			registerNames[reg])
 	}
 
 	// Write out a final minimal file
-	min_file, _ := PackAll(&ym_data, minimal_cfg)
-	err = os.WriteFile(output_path, min_file, 0644)
+	packedFile, _ := PackAll(&ymData, smallCfg)
+	err = os.WriteFile(outputPath, packedFile, 0644)
 	if err != nil {
 		return err
 	}
@@ -772,15 +763,15 @@ func CommandSmall(input_path string, output_path string) error {
 		// 2 cache sizes only.
 		for split := 1; split < numRegs-1; split++ {
 			// Make 2 lists, the "small" list and the big one
-			small_list := stats_for_regs[:split]
-			big_list := stats_for_regs[split:]
+			smallList := statsForRegs[:split]
+			bigList := statsForRegs[split:]
 
-			small_cache, small_total := FindSmallestTotalSize(&stats, small_list)
-			big_cache, big_total := FindSmallestTotalSize(&stats, big_list)
+			smallCache, smallTotal := FindSmallestTotalSize(&stats, smallList)
+			bigCache, bigTotal := FindSmallestTotalSize(&stats, bigList)
 
-			final_size := small_total + big_total
+			finalSize := smallTotal + bigTotal
 			fmt.Printf("total size with caches %d/%d -> %d (loss %d)\n",
-				small_cache, big_cache, final_size, best_total_size-final_size)
+				smallCache, bigCache, finalSize, bestTotalSize-finalSize)
 		}
 	}
 
@@ -789,15 +780,15 @@ func CommandSmall(input_path string, output_path string) error {
 
 type CliCommand struct {
 	fn       func(args []string) error
-	flagset  *flag.FlagSet
-	argsdesc string // argument description
+	flagSet  *flag.FlagSet
+	argsDesc string // argument description
 	desc     string
 }
 
 // Describes how to use a given command.
 func PrintCmdUsage(name string, cmd CliCommand) {
-	fmt.Printf("%s %s - %s\n", name, cmd.argsdesc, cmd.desc)
-	fs := cmd.flagset
+	fmt.Printf("%s %s - %s\n", name, cmd.argsDesc, cmd.desc)
+	fs := cmd.flagSet
 	var count int = 0
 	fs.VisitAll(func(_ *flag.Flag) {
 		count++
@@ -825,34 +816,34 @@ func PrintUsage(commands map[string]CliCommand) {
 }
 
 func main() {
-	pack_flags := flag.NewFlagSet("pack", flag.ExitOnError)
+	packDlags := flag.NewFlagSet("pack", flag.ExitOnError)
 	//unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
-	quick_flags := flag.NewFlagSet("minpack", flag.ExitOnError)
-	small_flags := flag.NewFlagSet("smallest", flag.ExitOnError)
-	help_flags := flag.NewFlagSet("help", flag.ExitOnError)
+	quickFlags := flag.NewFlagSet("minpack", flag.ExitOnError)
+	smallFlags := flag.NewFlagSet("smallest", flag.ExitOnError)
+	helpFlags := flag.NewFlagSet("help", flag.ExitOnError)
 
-	packOptSize := pack_flags.Int("cachesize", numRegs*512, "overall cache size in bytes")
-	packOptVerbose := pack_flags.Bool("verbose", false, "verbose output")
-	packOptEncoder := pack_flags.Int("encoder", 1, "encoder version (1|2)")
+	packOptSize := packDlags.Int("cachesize", numRegs*512, "overall cache size in bytes")
+	packOptVerbose := packDlags.Bool("verbose", false, "verbose output")
+	packOptEncoder := packDlags.Int("encoder", 1, "encoder version (1|2)")
 	var commands map[string]CliCommand
 
-	cmd_pack := func(args []string) error {
-		pack_flags.Parse(args)
-		files := pack_flags.Args()
+	cmdCustom := func(args []string) error {
+		packDlags.Parse(args)
+		files := packDlags.Args()
 		if len(files) != 2 {
 			fmt.Println("'pack' command: expected <input> <output> arguments")
 			os.Exit(1)
 		}
 		cfg := FilePackConfig{}
-		cfg.cache_sizes = FilledSlice(numRegs, *packOptSize/numRegs)
+		cfg.cacheSizes = FilledSlice(numRegs, *packOptSize/numRegs)
 		cfg.verbose = *packOptVerbose
 		cfg.encoder = *packOptEncoder
 		return CommandCustom(files[0], files[1], cfg)
 	}
 
-	cmd_quick := func(args []string) error {
-		quick_flags.Parse(args)
-		files := quick_flags.Args()
+	cmdQuick := func(args []string) error {
+		quickFlags.Parse(args)
+		files := quickFlags.Args()
 		if len(files) != 2 {
 			fmt.Println("'quick' command: expected <input> <output> arguments")
 			os.Exit(1)
@@ -860,9 +851,9 @@ func main() {
 		return CommandQuick(files[0], files[1])
 	}
 
-	cmd_small := func(args []string) error {
-		small_flags.Parse(args)
-		files := small_flags.Args()
+	cmdSmall := func(args []string) error {
+		smallFlags.Parse(args)
+		files := smallFlags.Args()
 		if len(files) != 2 {
 			fmt.Println("'small' command: expected <input> <output> arguments")
 			os.Exit(1)
@@ -870,9 +861,9 @@ func main() {
 		return CommandSmall(files[0], files[1])
 	}
 
-	cmd_help := func(args []string) error {
-		help_flags.Parse(args)
-		names := help_flags.Args()
+	cmdHelp := func(args []string) error {
+		helpFlags.Parse(args)
+		names := helpFlags.Args()
 		if len(names) > 0 {
 			cmd, pres := commands[names[0]]
 			if !pres {
@@ -888,11 +879,11 @@ func main() {
 	}
 
 	commands = map[string]CliCommand{
-		"pack": {cmd_pack, pack_flags, "<input> <output>", "pack with custom settings"},
+		"pack": {cmdCustom, packDlags, "<input> <output>", "pack with custom settings"},
 		//"unpack":   {nil, unpackCmd, "<input> <output>", "unpack to YM3 format (TBD)"},
-		"quick": {cmd_quick, quick_flags, "<input> <output>", "pack to small with quick runtime"},
-		"small": {cmd_small, small_flags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},
-		"help":  {cmd_help, help_flags, "", "list commands or describe a single command"},
+		"quick": {cmdQuick, quickFlags, "<input> <output>", "pack to small with quick runtime"},
+		"small": {cmdSmall, smallFlags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},
+		"help":  {cmdHelp, helpFlags, "", "list commands or describe a single command"},
 	}
 
 	if len(os.Args) < 2 {
@@ -911,7 +902,7 @@ func main() {
 
 	err := cmd.fn(os.Args[2:])
 	if err != nil {
-		fmt.Println("Error in pack_file", err.Error())
+		fmt.Println("Error: ", err.Error())
 		os.Exit(1)
 	}
 }

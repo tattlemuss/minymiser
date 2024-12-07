@@ -217,11 +217,11 @@ ym_write:
 	; We need channels 8, 9, 10
 	; These are 7,8,9 in the packed stream.
 	move.b	7(a5),d0
-	move.b	(a6,d0.w),d1			; d1 = mixer A
+	move.b	(a6,d0.w),d1				; d1 = mixer A
 	move.b	8(a5),d0
-	move.b	(a6,d0.w),d2			; d2 = mixer B
+	move.b	(a6,d0.w),d2				; d2 = mixer B
 	move.b	9(a5),d0
-	move.b	(a6,d0.w),d3			; d3 = mixer C
+	move.b	(a6,d0.w),d3			;	 d3 = mixer C
 
 	; Accumulate mixer by muxing each channel volume top bits
 	; Repeat twice, the first time for noise enable bits,
@@ -229,11 +229,11 @@ ym_write:
 	moveq	#0,d4
 	rept	2
 	add.b	d3,d3
-	addx.w	d4,d4				; shift in top bit channel C
+	addx.w	d4,d4					; shift in top bit channel C
 	add.b	d2,d2
-	addx.w	d4,d4				; shift in top bit channel B
+	addx.w	d4,d4					; shift in top bit channel B
 	add.b	d1,d1
-	addx.w	d4,d4				; shift in top bit channel A
+	addx.w	d4,d4					; shift in top bit channel A
 	endr
 
 	lea	$ffff8800.w,a3
@@ -241,7 +241,7 @@ ym_write:
 	; Write registers 0-6 inclusive
 r	set	0
 	rept	7
-	move.b	(a5)+,d0			; fetch depack stream index for this reg
+	move.b	(a5)+,d0				; fetch depack stream index for this reg
 	move.b	#r,(a3)
 	move.b	(a6,d0.w),(a1)
 r	set	r+1
@@ -250,24 +250,24 @@ r	set	r+1
 	; Now mixer
 	move.b	#7,(a3)
 	move.b	(a3),d1
-	and.b	#$c0,d1				; preserve top 2 bits (port A/B direction)
+	and.b	#$c0,d1					; preserve top 2 bits (port A/B direction)
 	or.b	d1,d4
 	move.b	d4,(a1)
 
 	; Now 8,9,10,11,12
 	rept	5
-	move.b	(a5)+,d0			; fetch depack stream index for this reg
+	move.b	(a5)+,d0				; fetch depack stream index for this reg
 	move.b	#r+1,(a3)
 	move.b	(a6,d0.w),(a1)
 r	set	r+1
 	endr
 
 	; Reg 13 - buzzer envelope
-	move.b	(a5)+,d0			; fetch depack stream index for this reg
-	move.b	(a6,d0.w),d0			; Buzzer envelope register is special case,
+	move.b	(a5)+,d0				; fetch depack stream index for this reg
+	move.b	(a6,d0.w),d0				; Buzzer envelope register is special case,
 	bmi.s	.skip_write
-	move.b	#13,(a3)			; only write if value is not -1
-	move.b	d0,(a1)				; since writing re-starts the envelope
+	move.b	#13,(a3)				; only write if value is not -1
+	move.b	d0,(a1)					; since writing re-starts the envelope
 .skip_write:
 
 	; Check for tune restart

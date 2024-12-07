@@ -1,7 +1,14 @@
 ; -----------------------------------------------------------------------
 ;	YNP PLAYER CODE
 ; -----------------------------------------------------------------------
-NUM_REGS		equ	14
+; The number of packed data streams in the file.
+; This is one less than the number of YM registers, since
+; the Mixer register is encoded into the "volume" register
+; streams.
+; Bit 7 of the volume stream value is the noise channel enable/disable.
+; Bit 6 of the volume stream value is the square channel enable/disable.
+; Bits 4-0 of the volume stream value are the natural "volume/envelope" bits.
+NUM_STREAMS		equ	13
 
 							; KEEP THESE 3 IN ORDER
 ymunp_match_read_ptr	equ	0			; X when copying, the src pointer (either in cache or in original stream)
@@ -17,13 +24,13 @@ ymset_size:		equ	6
 			rsreset
 ymp_sets_ptr:		rs.l	1
 ymp_register_list_ptr:	rs.l	1
-ymp_streams_state:	rs.b	ymunp_size*NUM_REGS
-ymp_sets_state:		rs.b	ymset_size*NUM_REGS	; max possible number of sets
+ymp_streams_state:	rs.b	ymunp_size*NUM_STREAMS
+ymp_sets_state:		rs.b	ymset_size*NUM_STREAMS	; max possible number of sets
 ymp_vbl_countdown:	rs.w	1			; number of VBLs left to restart
 ymp_tune_ptr:		rs.l	1
 ymp_cache_ptr:		rs.l	1
-ymp_output_buffer:	rs.b	NUM_REGS
-; TODO
+ymp_output_buffer:	rs.b	NUM_STREAMS
+			even
 ymp_size:		rs.b	1
 
 ; -----------------------------------------------------------------------
@@ -42,11 +49,11 @@ ymp_player_restart:
 	move.w	(a1)+,ymp_vbl_countdown(a0)
 
 	move.l	a1,ymp_register_list_ptr(a0)
-	; skip the register list
-	lea	NUM_REGS(a1),a1
+	; skip the register list and padding
+	lea	NUM_STREAMS+1(a1),a1
 
 	; Prime the read addresses for each reg
-	moveq.l	#NUM_REGS-1,d0
+	moveq.l	#NUM_STREAMS-1,d0
 .fill:
 	; a1 = input data (this moves for each channel)
 	move.l	d5,d1
@@ -205,25 +212,63 @@ ym_write:
 	lea	ymp_output_buffer(a0),a6
 	move.l	ymp_register_list_ptr(a0),a5
 	moveq	#0,d0
+
+	; Generate the mixer register
+	; We need channels 8, 9, 10
+	; These are 7,8,9 in the packed stream.
+	move.b	7(a5),d0
+	move.b	(a6,d0.w),d1			; d1 = mixer A
+	move.b	8(a5),d0
+	move.b	(a6,d0.w),d2			; d2 = mixer B
+	move.b	9(a5),d0
+	move.b	(a6,d0.w),d3			; d3 = mixer C
+
+	; Accumulate mixer by muxing each channel volume top bits
+	; Repeat twice, the first time for noise enable bits,
+	; the second time for square
+	moveq	#0,d4
+	rept	2
+	add.b	d3,d3
+	addx.w	d4,d4				; shift in top bit channel C
+	add.b	d2,d2
+	addx.w	d4,d4				; shift in top bit channel B
+	add.b	d1,d1
+	addx.w	d4,d4				; shift in top bit channel A
+	endr
+
 	lea	$ffff8800.w,a3
 	lea	$ffff8802.w,a1
-
+	; Write registers 0-6 inclusive
 r	set	0
-	rept	NUM_REGS
-	move.b	(a5)+,d0				; fetch depack stream index for this reg
-	ifne	r-13					; Buzzer envelope
-		move.b	#r,(a3)
-		move.b	(a6,d0.w),(a1)
-	else
-		; Buzzer variant
-		move.b	(a6,d0.w),d0			; Buzzer envelope register is special case,
-		bmi.s	.skip_write
-		move.b	#r,(a3)				; only write if value is not -1
-		move.b	d0,(a1)				; since writing re-starts the envelope
-.skip_write:
-	endif
+	rept	7
+	move.b	(a5)+,d0			; fetch depack stream index for this reg
+	move.b	#r,(a3)
+	move.b	(a6,d0.w),(a1)
 r	set	r+1
 	endr
+
+	; Now mixer
+	move.b	#7,(a3)
+	move.b	(a3),d1
+	and.b	#$c0,d1				; preserve top 2 bits (port A/B direction)
+	or.b	d1,d4
+	move.b	d4,(a1)
+
+	; Now 8,9,10,11,12
+	rept	5
+	move.b	(a5)+,d0			; fetch depack stream index for this reg
+	move.b	#r+1,(a3)
+	move.b	(a6,d0.w),(a1)
+r	set	r+1
+	endr
+
+	; Reg 13 - buzzer envelope
+	move.b	(a5)+,d0			; fetch depack stream index for this reg
+	move.b	(a6,d0.w),d0			; Buzzer envelope register is special case,
+	bmi.s	.skip_write
+	move.b	#13,(a3)			; only write if value is not -1
+	move.b	d0,(a1)				; since writing re-starts the envelope
+.skip_write:
 
 	; Check for tune restart
 	subq.w	#1,ymp_vbl_countdown(a0)

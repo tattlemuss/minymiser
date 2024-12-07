@@ -92,6 +92,7 @@ old_c:			ds.l	1
 
 ; Our packed data file.
 tune_data:		incbin	example.ymp
+;tune_data:		incbin	../test_output/tomsdiner.ym3.small.ymp
 			even
 tune_data_end:
 

@@ -9,15 +9,19 @@ import (
 	"sort"
 )
 
-const numRegs = 14
+// This is the number of registers - 1, since the mixer
+// register data is mixed into the channel volume register streams.
+const numStreams = 13
+const numYmRegs = 14
 
-var registerNames = [numRegs]string{
+var streamNames = [numStreams]string{
 	"A period lo", "A period hi",
 	"B period lo", "B period hi",
 	"C period lo", "C period hi",
 	"Noise period",
-	"Mixer",
-	"A volume", "B volume", "C volume",
+	"A volume + mixer",
+	"B volume + mixer",
+	"C volume + mixer",
 	"Env period lo", "Env period hi",
 	"Env shape"}
 
@@ -32,7 +36,7 @@ func EmptySlice() []byte {
 }
 
 func FilledSlice(size int, val int) []int {
-	arr := make([]int, numRegs)
+	arr := make([]int, numStreams)
 	for i := 0; i < size; i++ {
 		arr[i] = val
 	}
@@ -89,10 +93,10 @@ type Match struct {
 
 // Raw unpacked data for all the registers, plus tune length.
 type YmStreams struct {
-	// A binary array for each register to pack
-	register [numRegs]ByteSlice
-	numVbls  int // size of each packedstream
-	dataSize int // sum of sizes of all register arrays
+	// A binary array for each streamData stream to pack
+	streamData [numStreams]ByteSlice
+	numVbls    int // size of each packedstream
+	dataSize   int // sum of sizes of all register arrays
 }
 
 // Interface for being able to encode a stream into a packed format.
@@ -114,7 +118,7 @@ type Encoder interface {
 
 // Describes packing config for a whole file
 type FilePackConfig struct {
-	cacheSizes []int // cache size for each individual reg
+	cacheSizes []int // cache size for each individual stream
 	verbose    bool
 	verify     bool
 	report     bool // print output report to stdout
@@ -301,25 +305,61 @@ func TokenizeLazy(enc Encoder, data []byte, useCheapest bool, cfg StreamPackCfg)
 }
 
 // Split the file data array and create individual streams for the registers.
+// The Mixer register is extracted and its bits are distributed into other
+// streams (the "volume" register streams)
 func CreateYmStreams(data []byte) (YmStreams, error) {
 	// check header
 	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3Header) {
 		return YmStreams{}, errors.New("not a YM3 file")
 	}
 
+	// There are 14 regs in the original file
 	dataSize := len(data) - 4
-	if dataSize%numRegs != 0 {
+	if dataSize%numYmRegs != 0 {
 		return YmStreams{}, errors.New("unexpected data size")
 	}
 	// Convert to memory types
-	numVbls := dataSize / numRegs
+	numVbls := dataSize / numYmRegs
 	ym3 := YmStreams{}
 	ym3.numVbls = numVbls
 	ym3.dataSize = dataSize
-	for reg := 0; reg < numRegs; reg++ {
+
+	var raw_registers [numYmRegs]ByteSlice
+
+	for reg := 0; reg < numYmRegs; reg++ {
 		// Split register data
 		startPos := 4 + reg*numVbls
-		ym3.register[reg] = data[startPos : startPos+numVbls]
+		raw_registers[reg] = data[startPos : startPos+numVbls]
+	}
+
+	// Pull out mixer bits
+	for channel := 0; channel < 3; channel++ {
+		target_channel := 8 + channel
+		tone_bit := channel
+		noise_bit := channel + 3
+
+		for i, val := range raw_registers[7] {
+			if (raw_registers[target_channel][i] & 0xc0) != 0 {
+				panic("wrong data")
+			}
+			var acc byte = 0
+			if val&(1<<tone_bit) != 0 {
+				acc |= 1 << 6
+			}
+			if val&(1<<noise_bit) != 0 {
+				acc |= 1 << 7
+			}
+			raw_registers[target_channel][i] |= acc
+		}
+	}
+
+	// Remap the final set
+	for reg := 0; reg < numStreams; reg++ {
+		if reg < 7 {
+			ym3.streamData[reg] = raw_registers[reg]
+		} else {
+			ym3.streamData[reg] = raw_registers[reg+1]
+		}
 	}
 	return ym3, nil
 }
@@ -353,16 +393,16 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 
 	streamCfg := StreamPackCfg{}
 	streamCfg.verbose = fileCfg.verbose
-	packedStreams := make([]ByteSlice, numRegs)
+	packedStreams := make([]ByteSlice, numStreams)
 
 	var stats PackStats
 	stats.lenMap = make(map[int]int)
 	stats.distMap = make(map[int]int)
 
-	for reg := 0; reg < numRegs; reg++ {
-		streamCfg.bufferSize = fileCfg.cacheSizes[reg]
+	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
+		streamCfg.bufferSize = fileCfg.cacheSizes[strmIdx]
 		if fileCfg.verbose {
-			fmt.Println("Packing register", reg, registerNames[reg])
+			fmt.Println("Packing register", strmIdx, streamNames[strmIdx])
 		}
 		// Pack
 		var enc Encoder
@@ -373,8 +413,8 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 		} else {
 			return EmptySlice(), fmt.Errorf("unknown encoder ID: (%d)", fileCfg.encoder)
 		}
-		regData := ymData.register[reg]
-		packed := &packedStreams[reg]
+		regData := ymData.streamData[strmIdx]
+		packed := &packedStreams[strmIdx]
 
 		tokens := TokenizeLazy(enc, regData, useCheapest, streamCfg)
 		*packed = enc.Encode(tokens, regData)
@@ -411,8 +451,8 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 
 	// Group the registers into sets with the same size
 	sets := make(map[int][]int)
-	for reg := 0; reg < numRegs; reg++ {
-		sets[fileCfg.cacheSizes[reg]] = append(sets[fileCfg.cacheSizes[reg]], reg)
+	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
+		sets[fileCfg.cacheSizes[strmIdx]] = append(sets[fileCfg.cacheSizes[strmIdx]], strmIdx)
 	}
 
 	// Calc mapping of YM reg->stream in the file
@@ -420,10 +460,10 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 
 	// We will output the registers to the file, ordered by set
 	// and flattened.
-	regOrder := make([]byte, numRegs)
+	regOrder := make([]byte, numStreams)
 	// The inverse order is used at runtime to map from YM reg
 	// to depacked stream in the file.
-	inverseRegOrder := make([]byte, numRegs)
+	inverseRegOrder := make([]byte, numStreams)
 
 	// Data repreesenting the set configuration
 	setHeaderData := []byte{}
@@ -454,13 +494,14 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	headerSize := 2 + // header
 		2 + // cache size
 		2 + // num vbls
-		numRegs + // register order
-		4*numRegs + // offsets to packed streams
+		numStreams + // register order
+		1 + // padding
+		4*numStreams + // offsets to packed streams
 		len(setHeaderData) // set information
 
-	// Header: "Y" + 0x1 (version)
+	// Header: "Y" + 0x2 (version)
 	outputData = EncByte(outputData, 'Y')
-	outputData = EncByte(outputData, 0x1)
+	outputData = EncByte(outputData, 0x2)
 
 	// 0) Output required cache size (for user reference)
 	outputData = EncWord(outputData, uint16(Sum(fileCfg.cacheSizes)))
@@ -470,6 +511,7 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 
 	// 2) Order of registers
 	outputData = append(outputData, inverseRegOrder...)
+	outputData = EncByte(outputData, 0x0) // padding
 
 	dataPos := headerSize
 	// Offsets to register data
@@ -548,7 +590,7 @@ func MinpackFindCacheSize(ymData *YmStreams, minCacheSize int, maxCacheSize int,
 	// Launch the async packers
 	for cacheSize := minCacheSize; cacheSize <= maxCacheSize; cacheSize += cacheSizeStep {
 		cfg := FilePackConfig{}
-		cfg.cacheSizes = FilledSlice(numRegs, cacheSize)
+		cfg.cacheSizes = FilledSlice(numStreams, cacheSize)
 		cfg.verbose = false
 		cfg.encoder = 1
 		go FindPackedSizeFunc(cacheSize, ymData, cfg)
@@ -600,7 +642,7 @@ func CommandQuick(inputPath string, outputPath string) error {
 
 	fileCfg := FilePackConfig{}
 	fileCfg.verbose = false
-	fileCfg.cacheSizes = FilledSlice(numRegs, smallestCacheSize)
+	fileCfg.cacheSizes = FilledSlice(numStreams, smallestCacheSize)
 	fileCfg.encoder = 1
 	fileCfg.report = true
 	packedData, err := PackAll(&ymData, fileCfg)
@@ -615,7 +657,7 @@ func CommandQuick(inputPath string, outputPath string) error {
 // Records resulting size for a pack of a single register stream, for
 // a given cache size.
 type RegPackSizes struct {
-	reg       int
+	strmIdx   int
 	cacheSize int
 	totalSize int
 }
@@ -634,7 +676,7 @@ func FindSmallestTotalSize(stats *PerRegStats, regs []RegPackSizes) (int, int) {
 		// Create total cost
 		totalCost := 0
 		for j := range regs {
-			totalCost += stats.totalPackedSizes[key][regs[j].reg]
+			totalCost += stats.totalPackedSizes[key][regs[j].strmIdx]
 		}
 		if totalCost < smallestTotal {
 			smallestTotal = totalCost
@@ -648,7 +690,7 @@ func FindSmallestTotalSize(stats *PerRegStats, regs []RegPackSizes) (int, int) {
 // a given cache size.
 // TODO share with RegPackSizes?
 type SmallResult struct {
-	reg        int
+	strmIdx    int
 	cacheSize  int
 	packedSize int
 }
@@ -665,35 +707,35 @@ func CommandSmall(inputPath string, outputPath string) error {
 	maxSize := 1024
 	step := 16
 	for size := minSize; size < maxSize; size += step {
-		stats.totalPackedSizes[size] = make([]int, numRegs)
+		stats.totalPackedSizes[size] = make([]int, numStreams)
 	}
 
 	messages := make(chan SmallResult, 15)
 
 	// Async func to pack the file and return sizes
-	FindPackedSizeFunc := func(reg int, regCacheSize int, ymData *YmStreams) {
+	FindPackedSizeFunc := func(strmIdx int, regCacheSize int, ymData *YmStreams) {
 		enc := Encoder_v1{0}
 		var cfg StreamPackCfg
 		cfg.bufferSize = regCacheSize
 		cfg.verbose = false
-		regData := ymData.register[reg]
+		regData := ymData.streamData[strmIdx]
 		tokens := TokenizeLazy(&enc, regData, true, cfg)
 		packedData := enc.Encode(tokens, regData)
 		if err != nil {
 			fmt.Println(err)
-			messages <- SmallResult{reg, 0, 0}
+			messages <- SmallResult{strmIdx, 0, 0}
 		} else {
-			messages <- SmallResult{reg, regCacheSize, len(packedData)}
+			messages <- SmallResult{strmIdx, regCacheSize, len(packedData)}
 		}
 	}
 
 	fmt.Print("Collecting stats")
-	for reg := 0; reg < numRegs; reg++ {
+	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
 		fmt.Print(".")
 
 		// Launch...
 		for size := minSize; size < maxSize; size += step {
-			go FindPackedSizeFunc(reg, size, &ymData)
+			go FindPackedSizeFunc(strmIdx, size, &ymData)
 		}
 
 		// ... Collect.
@@ -701,7 +743,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 			msg := <-messages
 			csize := msg.cacheSize
 			total := msg.cacheSize + msg.packedSize
-			stats.totalPackedSizes[csize][reg] = total
+			stats.totalPackedSizes[csize][strmIdx] = total
 		}
 
 	}
@@ -716,14 +758,14 @@ func CommandSmall(inputPath string, outputPath string) error {
 	smallCfg.verbose = false
 	smallCfg.verify = false
 	smallCfg.report = true
-	smallCfg.cacheSizes = make([]int, numRegs)
+	smallCfg.cacheSizes = make([]int, numStreams)
 
-	for reg := 0; reg < numRegs; reg++ {
+	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
 		minTotal := 9999999
 		minCache := minTotal
 
 		for csize := range stats.totalPackedSizes {
-			total := stats.totalPackedSizes[csize][reg]
+			total := stats.totalPackedSizes[csize][strmIdx]
 			if total < minTotal {
 				minTotal = total
 				minCache = csize
@@ -731,9 +773,9 @@ func CommandSmall(inputPath string, outputPath string) error {
 		}
 		bestTotalSize += minTotal
 		bestCacheSize += minCache
-		statsForRegs = append(statsForRegs, RegPackSizes{reg, minCache, minTotal})
+		statsForRegs = append(statsForRegs, RegPackSizes{strmIdx, minCache, minTotal})
 
-		smallCfg.cacheSizes[reg] = minCache
+		smallCfg.cacheSizes[strmIdx] = minCache
 	}
 
 	sort.Slice(statsForRegs, func(i, j int) bool {
@@ -744,11 +786,11 @@ func CommandSmall(inputPath string, outputPath string) error {
 	})
 
 	// Now we can grade the streams based on who needs the biggest cache
-	for i := 0; i < numRegs; i++ {
-		reg := statsForRegs[i].reg
-		fmt.Printf("Reg %2d Needs cache %4d -> Total size %5d (%s)\n", reg, statsForRegs[i].cacheSize,
+	for i := 0; i < numStreams; i++ {
+		strmIdx := statsForRegs[i].strmIdx
+		fmt.Printf("Stream %2d Needs cache %4d -> Total size %5d (%s)\n", strmIdx, statsForRegs[i].cacheSize,
 			statsForRegs[i].totalSize,
-			registerNames[reg])
+			streamNames[strmIdx])
 	}
 
 	// Write out a final minimal file
@@ -761,7 +803,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 	if false {
 		// This is experimental code to force a pack with
 		// 2 cache sizes only.
-		for split := 1; split < numRegs-1; split++ {
+		for split := 1; split < numStreams-1; split++ {
 			// Make 2 lists, the "small" list and the big one
 			smallList := statsForRegs[:split]
 			bigList := statsForRegs[split:]
@@ -822,7 +864,7 @@ func main() {
 	smallFlags := flag.NewFlagSet("smallest", flag.ExitOnError)
 	helpFlags := flag.NewFlagSet("help", flag.ExitOnError)
 
-	packOptSize := packDlags.Int("cachesize", numRegs*512, "overall cache size in bytes")
+	packOptSize := packDlags.Int("cachesize", numStreams*512, "overall cache size in bytes")
 	packOptVerbose := packDlags.Bool("verbose", false, "verbose output")
 	packOptEncoder := packDlags.Int("encoder", 1, "encoder version (1|2)")
 	var commands map[string]CliCommand
@@ -835,7 +877,7 @@ func main() {
 			os.Exit(1)
 		}
 		cfg := FilePackConfig{}
-		cfg.cacheSizes = FilledSlice(numRegs, *packOptSize/numRegs)
+		cfg.cacheSizes = FilledSlice(numStreams, *packOptSize/numStreams)
 		cfg.verbose = *packOptVerbose
 		cfg.encoder = *packOptEncoder
 		return CommandCustom(files[0], files[1], cfg)

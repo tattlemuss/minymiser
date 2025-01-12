@@ -820,6 +820,44 @@ func CommandSmall(inputPath string, outputPath string) error {
 	return nil
 }
 
+func CommandSimple(inputPath string, outputPath string) error {
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		return err
+	}
+
+	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3Header) {
+		return errors.New("not a YM3 file")
+	}
+
+	// There are 14 regs in the original file
+	dataSize := len(data) - 4
+	if dataSize%numYmRegs != 0 {
+		return errors.New("unexpected data size")
+	}
+
+	numFrames := dataSize / numYmRegs
+
+	// The format of the output is
+	// 2 bytes -- header "YU"
+	// 2 bytes -- number of frames to play
+	// Followed by blocks of 14 bytes with the full set of register data per frame.
+	var outputData []byte
+	outputData = EncByte(outputData, 'Y')
+	outputData = EncByte(outputData, 'U')
+	outputData = EncWord(outputData, uint16(numFrames))
+
+	// Interleave the registers by frame
+	for i := 0; i < numFrames; i++ {
+		for reg := 0; reg < numYmRegs; reg++ {
+			outputData = EncByte(outputData, data[4+(reg*numFrames)+i])
+		}
+	}
+
+	err = os.WriteFile(outputPath, outputData, 0644)
+	return err
+}
+
 type CliCommand struct {
 	fn       func(args []string) error
 	flagSet  *flag.FlagSet
@@ -862,6 +900,7 @@ func main() {
 	//unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
 	quickFlags := flag.NewFlagSet("minpack", flag.ExitOnError)
 	smallFlags := flag.NewFlagSet("smallest", flag.ExitOnError)
+	simpleFlags := flag.NewFlagSet("simple", flag.ExitOnError)
 	helpFlags := flag.NewFlagSet("help", flag.ExitOnError)
 
 	packOptSize := packDlags.Int("cachesize", numStreams*512, "overall cache size in bytes")
@@ -903,6 +942,16 @@ func main() {
 		return CommandSmall(files[0], files[1])
 	}
 
+	cmdSimple := func(args []string) error {
+		simpleFlags.Parse(args)
+		files := simpleFlags.Args()
+		if len(files) != 2 {
+			fmt.Println("'simple' command: expected <input> <output> arguments")
+			os.Exit(1)
+		}
+		return CommandSimple(files[0], files[1])
+	}
+
 	cmdHelp := func(args []string) error {
 		helpFlags.Parse(args)
 		names := helpFlags.Args()
@@ -923,9 +972,10 @@ func main() {
 	commands = map[string]CliCommand{
 		"pack": {cmdCustom, packDlags, "<input> <output>", "pack with custom settings"},
 		//"unpack":   {nil, unpackCmd, "<input> <output>", "unpack to YM3 format (TBD)"},
-		"quick": {cmdQuick, quickFlags, "<input> <output>", "pack to small with quick runtime"},
-		"small": {cmdSmall, smallFlags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},
-		"help":  {cmdHelp, helpFlags, "", "list commands or describe a single command"},
+		"quick":  {cmdQuick, quickFlags, "<input> <output>", "pack to small with quick runtime"},
+		"small":  {cmdSmall, smallFlags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},
+		"simple": {cmdSimple, simpleFlags, "<input> <output>", "de-interleave to per-frame register values"},
+		"help":   {cmdHelp, helpFlags, "", "list commands or describe a single command"},
 	}
 
 	if len(os.Args) < 2 {

@@ -31,6 +31,7 @@ The `command` controls how the file is packed.
 * `small` generates a file with the smallest combined runtime file + memory cache footprint, but might take more CPU at runtime.
 * `quick` generates a file with higher memory footprint, but will take the least CPU at runtime.
 * `pack` allows you to pack with a custom cache (not recommended)
+* `simple` converts a YM3 file to the fastest format: a 4-byte header, then N frames of 14 bytes containing each register value in order.
 
 Playback
 --------

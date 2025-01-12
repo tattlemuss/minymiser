@@ -27,12 +27,12 @@ main:
 
 	; Core:
 	; Call func to set up player system
-	; Call func to set a specific module to play
+	; Install Timer C callback to play each frame
 	; Start playback
 
 	; (wait for keypress)
-	; Stop playback
-	; Clear player system
+
+	; Remove interrupt
 	; Exit
 
 	clr.w	-(sp)				;pterm
@@ -45,9 +45,9 @@ modplay_loop:
 	bsr	ymp_player_init
 
 	; Install timer C as test
-	or.w	#$0700,sr			;disable interrupts
+	or.w	#$0700,sr			; disable interrupts
 	move.l	$114.w,old_c
-	move.l	#c_routine,$114.w
+	move.l	#c_routine,$114.w		; install Timer C hook
 	clr.b	$484.w
 	move.w	#$2300,sr			; interrupts on
 
@@ -81,13 +81,13 @@ c_routine:
 	movem.l	(a7)+,d0-a6
 
 	move.w	(a7)+,$ffff8240.w
-.skip:	move.l	old_c,-(sp)
+.skip:	move.l	old_c,-(sp)			; Jump to existing Timer C (OS interrupt)
 	rts
 
 tccount			dc.w	200		;timer C down counter
 old_c:			ds.l	1
 
-
+			; Player code
 			include	"ymp.s"
 
 ; Our packed data file.
@@ -96,5 +96,9 @@ tune_data:		incbin	example.ymp
 			even
 tune_data_end:
 
+			section	bss
+; Data space for each copy of playback state
 player_state		ds.b	ymp_size
-player_cache		ds.b	8192		; or whatever size you need
+
+; LZ cache for player. Size depends on the compressed file.
+player_cache		ds.b	8192		; (or whatever size you need)

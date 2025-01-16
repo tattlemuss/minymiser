@@ -94,7 +94,7 @@ type Match struct {
 // Raw unpacked data for all the registers, plus tune length.
 type YmStreams struct {
 	// A binary array for each streamData stream to pack
-	streamData [numStreams]ByteSlice
+	streamData [numStreams][]byte
 	numVbls    int // size of each packedstream
 	dataSize   int // sum of sizes of all register arrays
 }

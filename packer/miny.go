@@ -858,6 +858,73 @@ func CommandSimple(inputPath string, outputPath string) error {
 	return err
 }
 
+func CommandDelta(inputPath string, outputPath string) error {
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		return err
+	}
+
+	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3Header) {
+		return errors.New("not a YM3 file")
+	}
+
+	// There are 14 regs in the original file
+	dataSize := len(data) - 4
+	if dataSize%numYmRegs != 0 {
+		return errors.New("unexpected data size")
+	}
+
+	numFrames := dataSize / numYmRegs
+
+	// The format of the output is
+	// 2 bytes -- header "YU"
+	// 2 bytes -- number of frames to play
+	// Followed by blocks of 14 bytes with the full set of register data per frame.
+	var outputData []byte
+	outputData = EncByte(outputData, 'Y')
+	outputData = EncByte(outputData, 'D')
+	outputData = EncWord(outputData, uint16(numFrames))
+
+	// Interleave the registers by frame
+	previous_val := make([]byte, numYmRegs)
+	for i := 0; i < numYmRegs; i++ {
+		previous_val[i] = 0xff
+	}
+
+	for frame := 0; frame < numFrames; frame++ {
+		var mask byte = 0
+		var vals []byte
+		for reg := 0; reg < numYmRegs; reg++ {
+			regVal := data[4+(reg*numFrames)+frame]
+			do_out := false // enforce on first frame
+			if reg == 13 {
+				// Spacial case -- only write out any non-0xff value
+				do_out = (regVal != 0xff)
+			} else {
+				do_out = (regVal != previous_val[reg]) ||
+					(frame == 0)
+			}
+
+			mask <<= 1
+			if do_out {
+				mask |= 1
+				vals = append(vals, regVal)
+			}
+			previous_val[reg] = regVal
+
+			if reg == 6 || reg == 13 {
+				outputData = EncByte(outputData, mask<<1)
+				outputData = append(outputData, vals...)
+				mask = 0
+				vals = vals[:0] // resets slice without freeing memory
+			}
+		}
+	}
+
+	err = os.WriteFile(outputPath, outputData, 0644)
+	return err
+}
+
 type CliCommand struct {
 	fn       func(args []string) error
 	flagSet  *flag.FlagSet
@@ -901,6 +968,7 @@ func main() {
 	quickFlags := flag.NewFlagSet("minpack", flag.ExitOnError)
 	smallFlags := flag.NewFlagSet("smallest", flag.ExitOnError)
 	simpleFlags := flag.NewFlagSet("simple", flag.ExitOnError)
+	deltaFlags := flag.NewFlagSet("delta", flag.ExitOnError)
 	helpFlags := flag.NewFlagSet("help", flag.ExitOnError)
 
 	packOptSize := packDlags.Int("cachesize", numStreams*512, "overall cache size in bytes")
@@ -952,6 +1020,16 @@ func main() {
 		return CommandSimple(files[0], files[1])
 	}
 
+	cmdDelta := func(args []string) error {
+		deltaFlags.Parse(args)
+		files := deltaFlags.Args()
+		if len(files) != 2 {
+			fmt.Println("'delta' command: expected <input> <output> arguments")
+			os.Exit(1)
+		}
+		return CommandDelta(files[0], files[1])
+	}
+
 	cmdHelp := func(args []string) error {
 		helpFlags.Parse(args)
 		names := helpFlags.Args()
@@ -975,6 +1053,7 @@ func main() {
 		"quick":  {cmdQuick, quickFlags, "<input> <output>", "pack to small with quick runtime"},
 		"small":  {cmdSmall, smallFlags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},
 		"simple": {cmdSimple, simpleFlags, "<input> <output>", "de-interleave to per-frame register values"},
+		"delta":  {cmdDelta, deltaFlags, "<input> <output>", "delta-pack file"},
 		"help":   {cmdHelp, helpFlags, "", "list commands or describe a single command"},
 	}
 

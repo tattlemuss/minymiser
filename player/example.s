@@ -1,5 +1,9 @@
 	opt		d+				;Debug symbols
 
+; Example code to demonstrate playback.
+; The definition DELTA_PACK is used to switch the build between
+; the normal compressed file version, and the simple delta-pack.
+
 main:
 	; Allocate memory
 	movea.l	a7,a5
@@ -87,12 +91,22 @@ c_routine:
 tccount			dc.w	200		;timer C down counter
 old_c:			ds.l	1
 
+			ifd	DELTA_PACK
+; ----------------- Delta pack variant -----------------
+
+			include	"yd.s"
+tune_data:		incbin	"example.yd"
+			section	bss
+player_cache		ds.b	1		; not needed
+player_state:		ds.b	yd_size
+
+			else
+; ----------------- Fill compression variant -----------------
 			; Player code
 			include	"ymp.s"
 
 ; Our packed data file.
-tune_data:		incbin	example.ymp
-;tune_data:		incbin	../test_output/tomsdiner.ym3.small.ymp
+tune_data:		incbin	"example.ymp"
 			even
 tune_data_end:
 
@@ -102,3 +116,4 @@ player_state		ds.b	ymp_size
 
 ; LZ cache for player. Size depends on the compressed file.
 player_cache		ds.b	8192		; (or whatever size you need)
+			endif

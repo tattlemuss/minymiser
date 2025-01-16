@@ -794,7 +794,10 @@ func CommandSmall(inputPath string, outputPath string) error {
 	}
 
 	// Write out a final minimal file
-	packedFile, _ := PackAll(&ymData, smallCfg)
+	packedFile, err := PackAll(&ymData, smallCfg)
+	if err != nil {
+		return err
+	}
 	err = os.WriteFile(outputPath, packedFile, 0644)
 	if err != nil {
 		return err

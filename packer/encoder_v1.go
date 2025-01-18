@@ -70,20 +70,16 @@ func (e *Encoder_v1) MatchCost(m Match) int {
 	return cost
 }
 
-func (e *Encoder_v1) Encode(tokens []Token, input []byte) []byte {
-	output := make([]byte, 0)
-	for i := 0; i < len(tokens); i += 1 {
-		var t Token = tokens[i]
-		if t.isMatch {
-			output = encodeCount(output, t.len, 0)
-			output = encodeOffset(output, t.off)
-		} else {
-			// Encode the literal
-			output = encodeCount(output, t.len, 0x80)
-			literals := input[t.off : t.off+t.len]
-			// https://github.com/golang/go/issues/28292
-			output = append(output, literals...)
-		}
+func (e *Encoder_v1) Encode(t *Token, output []byte, input []byte) []byte {
+	if t.isMatch {
+		output = encodeCount(output, t.len, 0)
+		output = encodeOffset(output, t.off)
+	} else {
+		// Encode the literal
+		output = encodeCount(output, t.len, 0x80)
+		literals := input[t.off : t.off+t.len]
+		// https://github.com/golang/go/issues/28292
+		output = append(output, literals...)
 	}
 	return output
 }

@@ -104,40 +104,36 @@ func (e *Encoder_v2) matchCost(m Match) int {
 	return cost
 }
 
-func (e *Encoder_v2) Encode(tokens []Token, input []byte) []byte {
-	output := make([]byte, 0)
-	for i := 0; i < len(tokens); i++ {
-		var t Token = tokens[i]
-		if t.isMatch {
-			var startLen byte = 0 // "more" marker
-			var startOff byte = 0 // "more" marker
-			if t.len <= 0xe {
-				startLen = byte(t.len)
-			}
-			if t.off <= 0xf {
-				startOff = byte(t.off)
-			}
-			output = append(output, startLen<<4|startOff)
-			// Now rest of length
-			if t.len > 0xe {
-				output = encodeCountV2(output, t.len)
-			}
-			// and rest of offset
-			if t.off > 0xf {
-				output = encodeOffsetV2(output, t.off)
-			}
-		} else {
-			// Encode the literal
-			if t.len <= 0xf {
-				output = append(output, 0xf0+byte(t.len))
-			} else {
-				output = append(output, 0xf0)
-				output = encodeCountV2(output, t.len)
-			}
-			// Then copy literals
-			literals := input[t.off : t.off+t.len]
-			output = append(output, literals...)
+func (e *Encoder_v2) Encode(t *Token, output []byte, input []byte) []byte {
+	if t.isMatch {
+		var startLen byte = 0 // "more" marker
+		var startOff byte = 0 // "more" marker
+		if t.len <= 0xe {
+			startLen = byte(t.len)
 		}
+		if t.off <= 0xf {
+			startOff = byte(t.off)
+		}
+		output = append(output, startLen<<4|startOff)
+		// Now rest of length
+		if t.len > 0xe {
+			output = encodeCountV2(output, t.len)
+		}
+		// and rest of offset
+		if t.off > 0xf {
+			output = encodeOffsetV2(output, t.off)
+		}
+	} else {
+		// Encode the literal
+		if t.len <= 0xf {
+			output = append(output, 0xf0+byte(t.len))
+		} else {
+			output = append(output, 0xf0)
+			output = encodeCountV2(output, t.len)
+		}
+		// Then copy literals
+		literals := input[t.off : t.off+t.len]
+		output = append(output, literals...)
 	}
 	return output
 }

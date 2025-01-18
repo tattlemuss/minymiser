@@ -109,11 +109,21 @@ type Encoder interface {
 	// Apply a ApplyMatch to the internal state
 	ApplyMatch(m Match)
 
-	// Encodes all the given tokens into a binary stream.
-	Encode(tokens []Token, input []byte) []byte
+	// Encodes a single token a binary stream.
+	Encode(t *Token, output []byte, input []byte) []byte
 
 	// Unpacks the given packed binary stream.
 	Decode(input []byte) []byte
+}
+
+func GetEncoder(choice int) (Encoder, error) {
+	if choice == 1 {
+		return &Encoder_v1{0}, nil
+	} else if choice == 2 {
+		return &Encoder_v2{0}, nil
+	}
+
+	return nil, fmt.Errorf("unknown encoder ID: (%d)", choice)
 }
 
 // Describes packing config for a whole file
@@ -192,7 +202,7 @@ func AddLiterals(tokens []Token, count int, pos int) []Token {
 	return tokens
 }
 
-func TokenizeGreedy(enc Encoder, data []byte, cfg StreamPackCfg) []byte {
+func TokenizeGreedy(enc Encoder, data []byte, cfg StreamPackCfg) []Token {
 	var tokens []Token
 
 	head := 0
@@ -216,7 +226,7 @@ func TokenizeGreedy(enc Encoder, data []byte, cfg StreamPackCfg) []byte {
 		fmt.Printf("\tGreedy: Matches %v Literals %v (%.2f%%)\n", matchBytes, litBytes,
 			Percent(matchBytes, litBytes+matchBytes))
 	}
-	return enc.Encode(tokens, data)
+	return tokens
 }
 
 func TokenizeLazy(enc Encoder, data []byte, useCheapest bool, cfg StreamPackCfg) []Token {
@@ -393,11 +403,17 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 
 	streamCfg := StreamPackCfg{}
 	streamCfg.verbose = fileCfg.verbose
-	packedStreams := make([]ByteSlice, numStreams)
 
 	var stats PackStats
 	stats.lenMap = make(map[int]int)
 	stats.distMap = make(map[int]int)
+
+	// Records the tokens needed
+	tokensPerStream := make([][]Token, numStreams)
+	enc, err := GetEncoder(fileCfg.encoder)
+	if err != nil {
+		return nil, err
+	}
 
 	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
 		streamCfg.bufferSize = fileCfg.cacheSizes[strmIdx]
@@ -405,19 +421,9 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 			fmt.Println("Packing register", strmIdx, streamNames[strmIdx])
 		}
 		// Pack
-		var enc Encoder
-		if fileCfg.encoder == 1 {
-			enc = &Encoder_v1{0}
-		} else if fileCfg.encoder == 2 {
-			enc = &Encoder_v2{0}
-		} else {
-			return EmptySlice(), fmt.Errorf("unknown encoder ID: (%d)", fileCfg.encoder)
-		}
 		regData := ymData.streamData[strmIdx]
-		packed := &packedStreams[strmIdx]
-
 		tokens := TokenizeLazy(enc, regData, useCheapest, streamCfg)
-		*packed = enc.Encode(tokens, regData)
+		tokensPerStream[strmIdx] = tokens
 
 		// Graph histogram
 		for i := range tokens {
@@ -435,18 +441,6 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 			}
 		}
 		stats.numTokens += len(tokens)
-
-		// Verify by unpacking
-		if fileCfg.verify {
-			unpacked := enc.Decode(*packed)
-			if !reflect.DeepEqual(regData, unpacked) {
-				return EmptySlice(), errors.New("failed to verify pack<->unpack round trip, there is a bug")
-			} else {
-				if fileCfg.verbose {
-					fmt.Println("\tVerify OK")
-				}
-			}
-		}
 	}
 
 	// Group the registers into sets with the same size
@@ -469,15 +463,22 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	setHeaderData := []byte{}
 	var streamId byte = 0
 	for cacheSize, set := range sets {
-		// Loop
+		if fileCfg.verbose {
+			fmt.Printf("Adding set with cache size %d\n", cacheSize)
+		}
 		setHeaderData = EncWord(setHeaderData, uint16(len(set)-1))
 		setHeaderData = EncWord(setHeaderData, uint16(cacheSize))
 		for _, reg := range set {
+			if fileCfg.verbose {
+				fmt.Printf(" - reg stream %d (%s)\n", reg, streamNames[reg])
+			}
 			inverseRegOrder[reg] = streamId
 			regOrder[streamId] = byte(reg)
 			streamId++
 		}
 	}
+
+	// Flag end of cache set
 	setHeaderData = EncWord(setHeaderData, uint16(0xffff))
 
 	// Number of bytes required by the set data
@@ -485,6 +486,32 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	// 2 bytes -- end sentinel
 	if len(setHeaderData) != 2+(4*len(sets)) {
 		panic("header size mismatch")
+	}
+
+	// Do the final interleaving of the encoded tokens into a single stream,
+	// knowing the order-per-frame that they will be depacked in
+	encodedTokens := make([]byte, 0)
+	nextTokenFrame := make([]int, numStreams) // frame number when next token gets used
+	nextTokenIndex := make([]int, numStreams) // index in tokensPerStream[x]
+
+	// Use a dumb loop to check the next token.
+	// We could use a constantly-sorted list (mapped by lower position+lower reg order),
+	// but there seems little need for the complexity since matches tend to be
+	// short.
+	for frameIdx := 0; frameIdx < ymData.numVbls; frameIdx++ {
+		for r := 0; r < numStreams; r++ {
+			strmIdx := regOrder[r]
+			if nextTokenFrame[strmIdx] == frameIdx {
+				// Read the next token from the packed data
+				tIdx := nextTokenIndex[strmIdx]
+				t := tokensPerStream[strmIdx][tIdx]
+				encodedTokens = enc.Encode(&t, encodedTokens, ymData.streamData[strmIdx])
+
+				// Move on to the next tokem in this stream
+				nextTokenIndex[strmIdx]++
+				nextTokenFrame[strmIdx] += t.len
+			}
+		}
 	}
 
 	// Generate the final data
@@ -496,7 +523,6 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 		2 + // num vbls
 		numStreams + // register order
 		1 + // padding
-		4*numStreams + // offsets to packed streams
 		len(setHeaderData) // set information
 
 	// Header: "Y" + 0x2 (version)
@@ -513,12 +539,6 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	outputData = append(outputData, inverseRegOrder...)
 	outputData = EncByte(outputData, 0x0) // padding
 
-	dataPos := headerSize
-	// Offsets to register data
-	for _, reg := range regOrder {
-		outputData = EncLong(outputData, uint32(dataPos))
-		dataPos += len(packedStreams[reg])
-	}
 	// Set data
 	outputData = append(outputData, setHeaderData...)
 
@@ -527,18 +547,18 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	}
 
 	// ... then the data
-	for _, reg := range regOrder {
-		outputData = append(outputData, packedStreams[reg]...)
-	}
+	outputData = append(outputData, encodedTokens...)
 
 	if fileCfg.report {
 		origSize := ymData.dataSize
 		packedSize := len(outputData)
 		cacheSize := Sum(fileCfg.cacheSizes)
 		totalSize := cacheSize + packedSize
+		bpf := float32(packedSize) / float32(ymData.numVbls)
+
 		fmt.Println("===== Complete =====")
 		fmt.Printf("Original size:    %6d\n", origSize)
-		fmt.Printf("Packed size:      %6d (%.1f%%)\n", packedSize, Percent(packedSize, origSize))
+		fmt.Printf("Packed size:      %6d (%.1f%%) (%.2f bytes/frame)\n", packedSize, Percent(packedSize, origSize), bpf)
 		fmt.Printf("Num cache sizes:  %6d (smaller=faster)\n", len(sets))
 		fmt.Printf("Total cache size: %6d\n", cacheSize)
 		fmt.Printf("Total RAM:        %6d (%.1f%%)\n", totalSize, Percent(totalSize, origSize))
@@ -714,18 +734,21 @@ func CommandSmall(inputPath string, outputPath string) error {
 
 	// Async func to pack the file and return sizes
 	FindPackedSizeFunc := func(strmIdx int, regCacheSize int, ymData *YmStreams) {
-		enc := Encoder_v1{0}
+		enc, _ := GetEncoder(1)
 		var cfg StreamPackCfg
 		cfg.bufferSize = regCacheSize
 		cfg.verbose = false
 		regData := ymData.streamData[strmIdx]
-		tokens := TokenizeLazy(&enc, regData, true, cfg)
-		packedData := enc.Encode(tokens, regData)
+		tokens := TokenizeLazy(enc, regData, true, cfg)
+		output := make([]byte, 0)
+		for i := 0; i < len(tokens); i++ {
+			output = enc.Encode(&tokens[i], output, regData)
+		}
 		if err != nil {
 			fmt.Println(err)
 			messages <- SmallResult{strmIdx, 0, 0}
 		} else {
-			messages <- SmallResult{strmIdx, regCacheSize, len(packedData)}
+			messages <- SmallResult{strmIdx, regCacheSize, len(output)}
 		}
 	}
 
@@ -756,7 +779,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 	var smallCfg FilePackConfig
 	smallCfg.encoder = 1
 	smallCfg.verbose = false
-	smallCfg.verify = false
+	smallCfg.verify = true
 	smallCfg.report = true
 	smallCfg.cacheSizes = make([]int, numStreams)
 

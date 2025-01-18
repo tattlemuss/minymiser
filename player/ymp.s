@@ -9,17 +9,14 @@
 ; Bit 6 of the volume stream value is the square channel enable/disable.
 ; Bits 4-0 of the volume stream value are the natural "volume/envelope" bits.
 NUM_STREAMS		equ	13
-
 							; KEEP THESE 3 IN ORDER
 ymunp_match_read_ptr	equ	0			; X when copying, the src pointer (either in cache or in original stream)
-ymunp_stream_read_ptr	equ	4			; position in packed data we are reading from
-ymunp_copy_count_w	equ	8			; number of bytes remaining to copy. Decremented at start of update.
-ymunp_size		equ	10			; structure size
+ymunp_copy_count_w	equ	4			; number of bytes remaining to copy. Decremented at start of update.
+ymunp_size		equ	6			; structure size
 
 ymset_cache_base_ptr:	equ	0			; bottom location of where to write the data
 ymset_cache_offset:	equ	4			; added to base_ptr for first write ptr
 ymset_size:		equ	6
-
 ;
 			rsreset
 ymp_sets_ptr:		rs.l	1
@@ -27,6 +24,7 @@ ymp_register_list_ptr:	rs.l	1
 ymp_streams_state:	rs.b	ymunp_size*NUM_STREAMS
 ymp_sets_state:		rs.b	ymset_size*NUM_STREAMS	; max possible number of sets
 ymp_vbl_countdown:	rs.w	1			; number of VBLs left to restart
+ymp_stream_read_ptr	rs.l	1			; position in packed data we are reading from
 ymp_tune_ptr:		rs.l	1
 ymp_cache_ptr:		rs.l	1
 ymp_output_buffer:	rs.b	NUM_STREAMS
@@ -44,7 +42,6 @@ ymp_player_init:
 ymp_player_restart:
 	lea	ymp_streams_state(a0),a3
 	; a3 = state data
-	move.l	a1,d5					; d5 = copy of packed file start
 	addq.l	#4,a1					; skip header (2 bytes ID + 2 bytes cache size)
 	move.w	(a1)+,ymp_vbl_countdown(a0)
 
@@ -56,9 +53,6 @@ ymp_player_restart:
 	moveq.l	#NUM_STREAMS-1,d0
 .fill:
 	; a1 = input data (this moves for each channel)
-	move.l	d5,d1
-	add.l	(a1)+,d1				; read size offset in header
-	move.l	d1,ymunp_stream_read_ptr(a3)		; setup ymunp_stream_read_ptr
 	clr.l	ymunp_match_read_ptr(a3)		; setup ymunp_match_read_ptr
 	move.w	#1,ymunp_copy_count_w(a3)		; setup ymunp_copy_count_w
 	lea	ymunp_size(a3),a3			; next stream state
@@ -71,6 +65,7 @@ ymp_player_restart:
 .read_set:
 	move.w	(a1)+,d1				; d1 = size of set - 1
 	bpl.s	.sets_done
+	move.l	a1,ymp_stream_read_ptr(a0)		; setup packed data ptr
 	rts
 .sets_done:
 	move.l	a2,ymset_cache_base_ptr(a3)
@@ -93,6 +88,8 @@ ymp_player_update:
 	; Update single stream here
 	lea	ymp_sets_state(a0),a5			; a5 = set current data
 	move.l	ymp_sets_ptr(a0),a4			; a4 = static set info
+	move.l	ymp_stream_read_ptr(a0),d6		; d6 = packed data stream
+
 	moveq	#0,d3					; d3 = clear to ensure add.l later works
 ymp_set_loop:
 	move.w	(a4)+,d1				; d1 = registers/loop (dbf size)
@@ -105,6 +102,8 @@ ymp_set_loop:
 
 	add.w	ymset_cache_offset(a5),a2		; a2 = register's current cache write ptr
 	add.l	d3,d5					; d5 = register's cache end ptr
+	;---------------------------------------------
+	; Register Loop
 ymp_register_loop:
 	moveq	#0,d4					; d4 = temp used for decoding
 
@@ -113,7 +112,7 @@ ymp_register_loop:
 	bne.s	.stream_copy_one			; still in copying state
 
 	; Set up next ymunp_match_read_ptr and ymunp_copy_count_w here
-	move.l	ymunp_stream_read_ptr(a3),a1		; a1 = packed data stream
+	move.l	d6,a1					; a1 = packed data stream
 	moveq	#0,d0
 	move.b	(a1)+,d0
 	; Match or reference?
@@ -136,7 +135,7 @@ ymp_register_loop:
 .read_offset_done:
 	add.w	d4,d0					; add final non-zero index
 
-	move.l	a1,ymunp_stream_read_ptr(a3)		; remember stream ptr now, before trashing a1
+	move.l	a1,d6					; remember stream ptr now, before trashing a1
 
 	; Apply offset backwards from where we are writing
 	move.l	a2,a1					; current cache write ptr
@@ -157,7 +156,7 @@ ymp_register_loop:
 	move.w	d0,ymunp_copy_count_w(a3)
 	move.l	a1,ymunp_match_read_ptr(a3)		; use the current packed stream address
 	add.l	d0,a1					; skip bytes in input stream
-	move.l	a1,ymunp_stream_read_ptr(a3)
+	move.l	a1,d6
 	; Falls through to do the copy
 
 .stream_copy_one:
@@ -184,11 +183,12 @@ ymp_register_loop:
 	add.w	d3,d5					; next cache_end ptr
 	add.w	d2,a3					; next stream structure
 	dbf	d1,ymp_register_loop
+	;---------------------------------------------
 
 	; Update and wrap the set offset
 	move.w	ymset_cache_offset(a5),d4
 	addq.w	#1,d4
-	cmp.w	d3,d4					;hit the cache size?
+	cmp.w	d3,d4					; hit the cache size?
 	bne.s	.no_cache_loop
 	moveq	#0,d4
 .no_cache_loop:
@@ -207,6 +207,8 @@ valid_count:
 	rts
 
 ymp_sets_done:
+	move.l	d6,ymp_stream_read_ptr(a0)		; recrod stream ptr for next time
+
 ym_write:
 	; We could write these in reverse order and reuse a6?
 	lea	ymp_output_buffer(a0),a6
@@ -221,7 +223,7 @@ ym_write:
 	move.b	8(a5),d0
 	move.b	(a6,d0.w),d2				; d2 = mixer B
 	move.b	9(a5),d0
-	move.b	(a6,d0.w),d3			;	 d3 = mixer C
+	move.b	(a6,d0.w),d3				; d3 = mixer C
 
 	; Accumulate mixer by muxing each channel volume top bits
 	; Repeat twice, the first time for noise enable bits,

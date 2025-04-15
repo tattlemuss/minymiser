@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------
-;	YNP PLAYER CODE
+;	YMP PLAYER CODE
 ; -----------------------------------------------------------------------
 ; The number of packed data streams in the file.
 ; This is one less than the number of YM registers, since
@@ -28,8 +28,8 @@ ymp_stream_read_ptr	rs.l	1			; position in packed data we are reading from
 ymp_tune_ptr:		rs.l	1
 ymp_cache_ptr:		rs.l	1
 ymp_output_buffer:	rs.b	NUM_STREAMS
-			even
-ymp_size:		rs.b	1
+			rs.b	NUM_STREAMS&1		; pad to even offset
+ymp_size:		rs.w	1
 
 ; -----------------------------------------------------------------------
 ; a0 = player state (ds.b ymp_size)
@@ -180,7 +180,7 @@ ymp_register_loop:
 
 	; Move on to the next register
 	add.w	d3,a2					; next ymp_cache_write_ptr
-	add.w	d3,d5					; next cache_end ptr
+	add.l	d3,d5					; next cache_end ptr
 	add.w	d2,a3					; next stream structure
 	dbf	d1,ymp_register_loop
 	;---------------------------------------------

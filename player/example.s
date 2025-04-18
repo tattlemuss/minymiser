@@ -102,24 +102,22 @@ c_routine:
 tccount			dc.w	200		;timer C down counter
 old_c:			ds.l	1
 
-			ifd	DELTA_PACK
+		ifd	DELTA_PACK
 ; ----------------- Delta pack variant -----------------
 
 			include	"yd.s"
+; Our packed data file.
 tune_data:		incbin	"example.yd"
-			section	bss
 			even
 player_state:		ds.b	yd_size
-			else
+		else
 ; ----------------- Fill compression variant -----------------
 			; Player code
 			include	"ymp.s"
-
 ; Our packed data file.
 tune_data:		incbin	"example.ymp"
 			even
 tune_data_end:
-
 			section	bss
 ; Data space for each copy of playback state
 player_state		ds.b	ymp_size
@@ -128,4 +126,4 @@ player_state		ds.b	ymp_size
 
 ; LZ cache for player. Size depends on the compressed file.
 player_cache		ds.b	8192		; (or whatever size you need)
-			endif
+		endif

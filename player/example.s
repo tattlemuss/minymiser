@@ -43,10 +43,17 @@ main:
 	trap	#1				;call gemdos
 
 modplay_loop:
+	ifd	DELTA_PACK
+	lea	player_state,a0
+	lea	tune_data,a1
+	bsr	yd_player_init
+	else
 	lea	player_state,a0
 	lea	tune_data,a1
 	lea	player_cache,a2
 	bsr	ymp_player_init
+	endif
+
 
 	; Install timer C as test
 	or.w	#$0700,sr			; disable interrupts
@@ -81,7 +88,11 @@ c_routine:
 	; Do the playback
 	movem.l	d0-a6,-(a7)
 	lea	player_state,a0
+	ifd	DELTA_PACK
+	bsr	yd_player_update
+	else
 	bsr	ymp_player_update
+	endif
 	movem.l	(a7)+,d0-a6
 
 	move.w	(a7)+,$ffff8240.w
@@ -97,9 +108,8 @@ old_c:			ds.l	1
 			include	"yd.s"
 tune_data:		incbin	"example.yd"
 			section	bss
-player_cache		ds.b	1		; not needed
+			even
 player_state:		ds.b	yd_size
-
 			else
 ; ----------------- Fill compression variant -----------------
 			; Player code
@@ -113,6 +123,8 @@ tune_data_end:
 			section	bss
 ; Data space for each copy of playback state
 player_state		ds.b	ymp_size
+
+			printv	ymp_size
 
 ; LZ cache for player. Size depends on the compressed file.
 player_cache		ds.b	8192		; (or whatever size you need)

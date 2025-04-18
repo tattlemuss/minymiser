@@ -11,8 +11,7 @@ yd_size		rs.b	1
 ; -----------------------------------------------------------------------
 ; a0 = player state (ds.b yd_size)
 ; a1 = start of packed ym data
-; a2 = start of player cache (ds.b memory)
-ymp_player_init:
+yd_player_init:
 	addq.l	#2,a1				; skip header
 	move.w	(a1)+,d0			; frame count
 	move.l	a1,(a0)+			; curr
@@ -23,7 +22,7 @@ ymp_player_init:
 
 ; -----------------------------------------------------------------------
 ; a0 = player state structure
-ymp_player_update:
+yd_player_update:
 	move.l	yd_curr(a0),a1
 	lea	$ffff8800.w,a2
 	lea	$ffff8802.w,a3

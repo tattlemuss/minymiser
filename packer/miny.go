@@ -188,7 +188,12 @@ func FindCheapestMatch(enc Encoder, data []byte, head int, distance int) Match {
 // represent them
 func AddLiterals(tokens []Token, count int, pos int) []Token {
 	lastIndex := len(tokens) - 1
-	if lastIndex >= 0 && !tokens[lastIndex].isMatch {
+
+	// We also split literals at just before 64K to avoid runtime
+	// 16-bit overflow
+	if lastIndex >= 0 &&
+		!tokens[lastIndex].isMatch &&
+		tokens[lastIndex].len < 0xfff0 {
 		tokens[lastIndex].len++
 	} else {
 		return append(tokens, Token{false, count, pos})

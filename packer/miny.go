@@ -142,7 +142,9 @@ func FindLongestMatch(data []byte, head int, distance int) Match {
 	for offset := 1; offset <= maxDist; offset++ {
 		length := 0
 		checkPos := head - offset
-		for head+length < len(data) && data[checkPos+length] == data[head+length] {
+		for head+length < len(data) &&
+			data[checkPos+length] == data[head+length] &&
+			length < 0xff00 {
 			length++
 		}
 		if length >= 3 && length > bestLength {
@@ -164,7 +166,9 @@ func FindCheapestMatch(enc Encoder, data []byte, head int, distance int) Match {
 	for offset := 1; offset <= maxDist; offset++ {
 		length := 0
 		checkPos := head - offset
-		for head+length < len(data) && data[checkPos+length] == data[head+length] {
+		for head+length < len(data) &&
+			data[checkPos+length] == data[head+length] &&
+			length < 0xff00 {
 			length++
 		}
 		if length >= 3 {

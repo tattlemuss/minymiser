@@ -890,12 +890,12 @@ func CommandDelta(inputPath string, outputPath string) error {
 
 	// The format of the output is
 	// 2 bytes -- header "YU"
-	// 2 bytes -- number of frames to play
+	// 4 bytes -- number of frames to play
 	// Followed by blocks of 14 bytes with the full set of register data per frame.
 	var outputData []byte
 	outputData = EncByte(outputData, 'Y')
 	outputData = EncByte(outputData, 'D')
-	outputData = EncWord(outputData, uint16(numFrames))
+	outputData = EncLong(outputData, uint32(numFrames))
 
 	// Interleave the registers by frame
 	previous_val := make([]byte, numYmRegs)

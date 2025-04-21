@@ -502,21 +502,21 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	// Calc overall header size
 	headerSize := 2 + // header
 		2 + // cache size
-		2 + // num vbls
+		4 + // num vbls
 		numStreams + // register order
 		1 + // padding
 		4*numStreams + // offsets to packed streams
 		len(setHeaderData) // set information
 
-	// Header: "Y" + 0x2 (version)
+	// Header: "Y" + 0x3 (version)
 	outputData = EncByte(outputData, 'Y')
-	outputData = EncByte(outputData, 0x2)
+	outputData = EncByte(outputData, 0x3)
 
 	// 0) Output required cache size (for user reference)
 	outputData = EncWord(outputData, uint16(Sum(fileCfg.cacheSizes)))
 
 	// 1) Output size in VBLs
-	outputData = EncWord(outputData, uint16(ymData.numVbls))
+	outputData = EncLong(outputData, uint32(ymData.numVbls))
 
 	// 2) Order of registers
 	outputData = append(outputData, inverseRegOrder...)

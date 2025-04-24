@@ -564,6 +564,7 @@ func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) 
 	}
 
 	fileCfg.report = true
+	fileCfg.verify = true
 	packedData, err := PackAll(&ymData, fileCfg)
 	if err != nil {
 		return err
@@ -602,6 +603,7 @@ func MinpackFindCacheSize(ymData *YmStreams, minCacheSize int, maxCacheSize int,
 		cfg.cacheSizes = FilledSlice(numStreams, cacheSize)
 		cfg.verbose = false
 		cfg.encoder = 1
+		cfg.verify = false
 		go FindPackedSizeFunc(cacheSize, ymData, cfg)
 	}
 
@@ -654,6 +656,7 @@ func CommandQuick(inputPath string, outputPath string) error {
 	fileCfg.cacheSizes = FilledSlice(numStreams, smallestCacheSize)
 	fileCfg.encoder = 1
 	fileCfg.report = true
+	fileCfg.verify = true
 	packedData, err := PackAll(&ymData, fileCfg)
 	if err != nil {
 		return err
@@ -765,7 +768,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 	var smallCfg FilePackConfig
 	smallCfg.encoder = 1
 	smallCfg.verbose = false
-	smallCfg.verify = false
+	smallCfg.verify = true
 	smallCfg.report = true
 	smallCfg.cacheSizes = make([]int, numStreams)
 

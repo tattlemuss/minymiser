@@ -139,3 +139,7 @@ func (e *Encoder_v1) ApplyLit(litCount int) {
 func (e *Encoder_v1) ApplyMatch(m Match) {
 	e.numLiterals = 0
 }
+
+func (e *Encoder_v1) Reset() {
+	e.numLiterals = 0
+}

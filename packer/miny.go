@@ -114,6 +114,10 @@ type Encoder interface {
 
 	// Unpacks the given packed binary stream.
 	Decode(input []byte) []byte
+
+	// Clear internal state to restart
+	// (used for testing)
+	Reset()
 }
 
 // Describes packing config for a whole file

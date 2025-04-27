@@ -5,6 +5,50 @@ import (
 	"testing"
 )
 
+func costsForMatches(enc Encoder, test *testing.T) {
+	var tokens []Token
+	tokens = append(tokens, Token{})
+	t := &tokens[0]
+
+	input := make([]byte, 512)
+
+	var m Match
+	t.isMatch = true
+	for tlen := 1; tlen < 512; tlen++ {
+		m.len = tlen
+		t.len = tlen
+		for toff := 1; toff < 512; toff++ {
+			m.off = toff
+			t.off = toff
+			cost := enc.Cost(0, m)
+			encoded := enc.Encode(tokens, input)
+			if len(encoded) != cost {
+				test.Errorf("match_cost failure, len %d off %d: got %d, want %d",
+					tlen, toff, len(encoded), cost)
+			}
+		}
+	}
+}
+
+func costsForLits(enc Encoder, test *testing.T) {
+	var tokens []Token
+	tokens = append(tokens, Token{})
+	t := &tokens[0]
+	input := make([]byte, 512)
+
+	var m Match
+	t.isMatch = false
+	for tlen := 1; tlen < 512; tlen++ {
+		cost := enc.Cost(tlen, m)
+		t.len = tlen
+		encoded := enc.Encode(tokens, input)
+		if len(encoded) != cost {
+			test.Errorf("lit_cost failure: len %d: result %d, expected %d", tlen, len(encoded), cost)
+		}
+		enc.Reset()
+	}
+}
+
 func TestEncV2(t *testing.T) {
 	var costs = []struct {
 		lit                int
@@ -48,4 +92,28 @@ func TestEncV2(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestMatchCosts_V1(t *testing.T) {
+	t.Log("Testing match length for Encoder_v1")
+	var e1 Encoder_v1
+	costsForMatches(&e1, t)
+}
+
+func TestLitCosts_V1(t *testing.T) {
+	t.Log("Testing lit length for Encoder_v1")
+	var e1 Encoder_v1
+	costsForLits(&e1, t)
+}
+
+func TestMatchCosts_V2(t *testing.T) {
+	t.Log("Testing match length for Encoder_v2")
+	var e2 Encoder_v2
+	costsForMatches(&e2, t)
+}
+
+func TestLitCosts_V2(t *testing.T) {
+	t.Log("Testing lit length for Encoder_v2")
+	var e1 Encoder_v2
+	costsForLits(&e1, t)
 }

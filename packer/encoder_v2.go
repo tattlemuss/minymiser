@@ -88,7 +88,7 @@ func (e *Encoder_v2) matchCost(m Match) int {
 	off := m.off
 	if len > 0xe {
 		cost++ // another byte
-		if len >= 0xff {
+		if len > 0xff {
 			cost += 2 // 0, then 0xffff offset
 		}
 	}
@@ -203,5 +203,9 @@ func (e *Encoder_v2) ApplyLit(litCount int) {
 }
 
 func (e *Encoder_v2) ApplyMatch(m Match) {
+	e.numLiterals = 0
+}
+
+func (e *Encoder_v2) Reset() {
 	e.numLiterals = 0
 }

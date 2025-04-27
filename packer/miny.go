@@ -78,46 +78,12 @@ func EncLong(output []byte, value uint32) []byte {
 	return append(output, byte(value&255))
 }
 
-// Describes a match or a series of literals.
-type Token struct {
-	isMatch bool
-	len     int // length in bytes
-	off     int // reverse offset if isMatch, abs position if literal
-}
-
-// Describes a Match run.
-type Match struct {
-	len int
-	off int
-}
-
 // Raw unpacked data for all the registers, plus tune length.
 type YmStreams struct {
 	// A binary array for each streamData stream to pack
 	streamData [numStreams][]byte
 	numVbls    int // size of each packedstream
 	dataSize   int // sum of sizes of all register arrays
-}
-
-// Interface for being able to encode a stream into a packed format.
-type Encoder interface {
-	// Calculate the Cost for adding literals or matches, or both
-	Cost(litCount int, m Match) int
-
-	// Apply N literals to the internal state
-	ApplyLit(litCount int)
-	// Apply a ApplyMatch to the internal state
-	ApplyMatch(m Match)
-
-	// Encodes all the given tokens into a binary stream.
-	Encode(tokens []Token, input []byte) []byte
-
-	// Unpacks the given packed binary stream.
-	Decode(input []byte) []byte
-
-	// Clear internal state to restart
-	// (used for testing)
-	Reset()
 }
 
 // Describes packing config for a whole file

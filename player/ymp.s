@@ -23,8 +23,8 @@ ymp_sets_ptr:		rs.l	1
 ymp_register_list_ptr:	rs.l	1
 ymp_streams_state:	rs.b	ymunp_size*NUM_STREAMS
 ymp_sets_state:		rs.b	ymset_size*NUM_STREAMS	; max possible number of sets
-ymp_vbl_countdown:	rs.w	1			; number of VBLs left to restart
 ymp_stream_read_ptr	rs.l	1			; position in packed data we are reading from
+ymp_vbl_countdown:	rs.l	1			; number of VBLs left to restart
 ymp_tune_ptr:		rs.l	1
 ymp_cache_ptr:		rs.l	1
 ymp_output_buffer:	rs.b	NUM_STREAMS
@@ -43,7 +43,7 @@ ymp_player_restart:
 	lea	ymp_streams_state(a0),a3
 	; a3 = state data
 	addq.l	#4,a1					; skip header (2 bytes ID + 2 bytes cache size)
-	move.w	(a1)+,ymp_vbl_countdown(a0)
+	move.l	(a1)+,ymp_vbl_countdown(a0)
 
 	move.l	a1,ymp_register_list_ptr(a0)
 	; skip the register list and padding
@@ -273,7 +273,7 @@ r	set	r+1
 .skip_write:
 
 	; Check for tune restart
-	subq.w	#1,ymp_vbl_countdown(a0)
+	subq.l	#1,ymp_vbl_countdown(a0)
 	bne.s	.no_tune_restart
 	move.l	ymp_tune_ptr(a0),a1
 	; This should rewrite the countdown value and

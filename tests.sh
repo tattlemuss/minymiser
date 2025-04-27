@@ -13,5 +13,7 @@ do
 	packer/miny pack test_data/$fname test_output/$fname.pack.ymp > test_output/$fname.pack.txt
 	packer/miny small test_data/$fname test_output/$fname.small.ymp > test_output/$fname.small.txt
 	packer/miny quick test_data/$fname test_output/$fname.quick.ymp > test_output/$fname.quick.txt
+	packer/miny simple test_data/$fname test_output/$fname.yu > test_output/$fname.simple.txt
+	packer/miny delta test_data/$fname test_output/$fname.yd > test_output/$fname.delta.txt
 done
 

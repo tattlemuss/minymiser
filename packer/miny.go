@@ -78,42 +78,12 @@ func EncLong(output []byte, value uint32) []byte {
 	return append(output, byte(value&255))
 }
 
-// Describes a match or a series of literals.
-type Token struct {
-	isMatch bool
-	len     int // length in bytes
-	off     int // reverse offset if isMatch, abs position if literal
-}
-
-// Describes a Match run.
-type Match struct {
-	len int
-	off int
-}
-
 // Raw unpacked data for all the registers, plus tune length.
 type YmStreams struct {
 	// A binary array for each streamData stream to pack
 	streamData [numStreams][]byte
 	numVbls    int // size of each packedstream
 	dataSize   int // sum of sizes of all register arrays
-}
-
-// Interface for being able to encode a stream into a packed format.
-type Encoder interface {
-	// Calculate the Cost for adding literals or matches, or both
-	Cost(litCount int, m Match) int
-
-	// Apply N literals to the internal state
-	ApplyLit(litCount int)
-	// Apply a ApplyMatch to the internal state
-	ApplyMatch(m Match)
-
-	// Encodes a single token a binary stream.
-	Encode(t *Token, output []byte, input []byte) []byte
-
-	// Unpacks the given packed binary stream.
-	Decode(input []byte) []byte
 }
 
 func GetEncoder(choice int) (Encoder, error) {
@@ -152,7 +122,9 @@ func FindLongestMatch(data []byte, head int, distance int) Match {
 	for offset := 1; offset <= maxDist; offset++ {
 		length := 0
 		checkPos := head - offset
-		for head+length < len(data) && data[checkPos+length] == data[head+length] {
+		for head+length < len(data) &&
+			data[checkPos+length] == data[head+length] &&
+			length < 0xff00 {
 			length++
 		}
 		if length >= 3 && length > bestLength {
@@ -174,7 +146,9 @@ func FindCheapestMatch(enc Encoder, data []byte, head int, distance int) Match {
 	for offset := 1; offset <= maxDist; offset++ {
 		length := 0
 		checkPos := head - offset
-		for head+length < len(data) && data[checkPos+length] == data[head+length] {
+		for head+length < len(data) &&
+			data[checkPos+length] == data[head+length] &&
+			length < 0xff00 {
 			length++
 		}
 		if length >= 3 {
@@ -194,7 +168,12 @@ func FindCheapestMatch(enc Encoder, data []byte, head int, distance int) Match {
 // represent them
 func AddLiterals(tokens []Token, count int, pos int) []Token {
 	lastIndex := len(tokens) - 1
-	if lastIndex >= 0 && !tokens[lastIndex].isMatch {
+
+	// We also split literals at just before 64K to avoid runtime
+	// 16-bit overflow
+	if lastIndex >= 0 &&
+		!tokens[lastIndex].isMatch &&
+		tokens[lastIndex].len < 0xfff0 {
 		tokens[lastIndex].len++
 	} else {
 		return append(tokens, Token{false, count, pos})
@@ -520,20 +499,20 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	// Calc overall header size
 	headerSize := 2 + // header
 		2 + // cache size
-		2 + // num vbls
+		4 + // num vbls
 		numStreams + // register order
 		1 + // padding
 		len(setHeaderData) // set information
 
-	// Header: "Y" + 0x2 (version)
+	// Header: "Y" + 0x3 (version)
 	outputData = EncByte(outputData, 'Y')
-	outputData = EncByte(outputData, 0x2)
+	outputData = EncByte(outputData, 0x3)
 
 	// 0) Output required cache size (for user reference)
 	outputData = EncWord(outputData, uint16(Sum(fileCfg.cacheSizes)))
 
 	// 1) Output size in VBLs
-	outputData = EncWord(outputData, uint16(ymData.numVbls))
+	outputData = EncLong(outputData, uint32(ymData.numVbls))
 
 	// 2) Order of registers
 	outputData = append(outputData, inverseRegOrder...)
@@ -575,6 +554,7 @@ func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) 
 	}
 
 	fileCfg.report = true
+	fileCfg.verify = true
 	packedData, err := PackAll(&ymData, fileCfg)
 	if err != nil {
 		return err
@@ -613,6 +593,7 @@ func MinpackFindCacheSize(ymData *YmStreams, minCacheSize int, maxCacheSize int,
 		cfg.cacheSizes = FilledSlice(numStreams, cacheSize)
 		cfg.verbose = false
 		cfg.encoder = 1
+		cfg.verify = false
 		go FindPackedSizeFunc(cacheSize, ymData, cfg)
 	}
 
@@ -665,6 +646,7 @@ func CommandQuick(inputPath string, outputPath string) error {
 	fileCfg.cacheSizes = FilledSlice(numStreams, smallestCacheSize)
 	fileCfg.encoder = 1
 	fileCfg.report = true
+	fileCfg.verify = true
 	packedData, err := PackAll(&ymData, fileCfg)
 	if err != nil {
 		return err
@@ -904,12 +886,12 @@ func CommandDelta(inputPath string, outputPath string) error {
 
 	// The format of the output is
 	// 2 bytes -- header "YU"
-	// 2 bytes -- number of frames to play
+	// 4 bytes -- number of frames to play
 	// Followed by blocks of 14 bytes with the full set of register data per frame.
 	var outputData []byte
 	outputData = EncByte(outputData, 'Y')
 	outputData = EncByte(outputData, 'D')
-	outputData = EncWord(outputData, uint16(numFrames))
+	outputData = EncLong(outputData, uint32(numFrames))
 
 	// Interleave the registers by frame
 	previous_val := make([]byte, numYmRegs)

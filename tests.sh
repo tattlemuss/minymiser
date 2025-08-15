@@ -4,12 +4,17 @@
 # The output files are named such that it should be easy to compare the
 # output filesize.
 
-mkdir test_output
-rm -f test_output/*.ymp
+mkdir -f test_output
+# Stop on failure
+set -e
+# Show commands
+set -x
+
+rm -f test_output/*
 
 for fname in `cd test_data && ls *.ym*`
 do
-	echo $fname
+	echo "--- " $fname " ---"
 	packer/miny pack test_data/$fname test_output/$fname.pack.ymp > test_output/$fname.pack.txt
 	packer/miny small test_data/$fname test_output/$fname.small.ymp > test_output/$fname.small.txt
 	packer/miny quick test_data/$fname test_output/$fname.quick.ymp > test_output/$fname.quick.txt

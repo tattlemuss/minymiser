@@ -12,7 +12,6 @@ import (
 // This is the number of registers - 1, since the mixer
 // register data is mixed into the channel volume register streams.
 const numStreams = 13
-const numYmRegs = 14
 
 var streamNames = [numStreams]string{
 	"A period lo", "A period hi",
@@ -24,8 +23,6 @@ var streamNames = [numStreams]string{
 	"C volume + mixer",
 	"Env period lo", "Env period hi",
 	"Env shape"}
-
-var ym3Header = []byte{'Y', 'M', '3', '!'}
 
 // Contains a single stream of packed or unpacked data.
 type ByteSlice []byte
@@ -283,44 +280,23 @@ func TokenizeLazy(enc Encoder, data []byte, useCheapest bool, cfg StreamPackCfg)
 	return tokens
 }
 
-// Split the file data array and create individual streams for the registers.
-// The Mixer register is extracted and its bits are distributed into other
-// streams (the "volume" register streams)
-func CreateYmStreams(data []byte) (YmStreams, error) {
-	// check header
-	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3Header) {
-		return YmStreams{}, errors.New("not a YM3 file")
-	}
-
-	// There are 14 regs in the original file
-	dataSize := len(data) - 4
-	if dataSize%numYmRegs != 0 {
-		return YmStreams{}, errors.New("unexpected data size")
-	}
-	// Convert to memory types
-	numVbls := dataSize / numYmRegs
-	ym3 := YmStreams{}
-	ym3.numVbls = numVbls
-	ym3.dataSize = dataSize
-
-	var raw_registers [numYmRegs]ByteSlice
-
-	for reg := 0; reg < numYmRegs; reg++ {
-		// Split register data
-		startPos := 4 + reg*numVbls
-		raw_registers[reg] = data[startPos : startPos+numVbls]
-	}
-
-	// Pull out mixer bits
+// Take the 14 raw register arrays and multiplex the mixer bits
+// into the final YmStreams representation.
+// NOTE: this overwrites contents of some of the original
+// RawRegisters byte slices (for the volume channels)
+func RemapFromRaw(rawRegs *RawRegisters) *YmStreams {
+	// Pull out mixer bits and write into the volume streams
 	for channel := 0; channel < 3; channel++ {
 		target_channel := 8 + channel
 		tone_bit := channel
 		noise_bit := channel + 3
 
-		for i, val := range raw_registers[7] {
-			if (raw_registers[target_channel][i] & 0xc0) != 0 {
+		for i, val := range rawRegs.data[7] {
+			if (rawRegs.data[target_channel][i] & 0xc0) != 0 {
 				panic("wrong data")
 			}
+			// Put the tone and noise mixer bits into bits
+			// 6 and 7 of the volume
 			var acc byte = 0
 			if val&(1<<tone_bit) != 0 {
 				acc |= 1 << 6
@@ -328,30 +304,38 @@ func CreateYmStreams(data []byte) (YmStreams, error) {
 			if val&(1<<noise_bit) != 0 {
 				acc |= 1 << 7
 			}
-			raw_registers[target_channel][i] |= acc
+			rawRegs.data[target_channel][i] |= acc
 		}
 	}
-
+	var ymStr YmStreams
+	ymStr.numVbls = len(rawRegs.data[0])
+	ymStr.dataSize = 0
 	// Remap the final set
-	for reg := 0; reg < numStreams; reg++ {
-		if reg < 7 {
-			ym3.streamData[reg] = raw_registers[reg]
+	for strm := 0; strm < numStreams; strm++ {
+		if strm < 7 {
+			ymStr.streamData[strm] = rawRegs.data[strm]
 		} else {
-			ym3.streamData[reg] = raw_registers[reg+1]
+			ymStr.streamData[strm] = rawRegs.data[strm+1]
 		}
+		// Accumulate data size
+		ymStr.dataSize += len(ymStr.streamData[strm])
 	}
-	return ym3, nil
+	return &ymStr
 }
 
 // Load an input file and create the ym_streams data object.
-func LoadStreamFile(inputPath string) (YmStreams, error) {
+func LoadStreamFile(inputPath string) (*YmStreams, error) {
 	dat, err := os.ReadFile(inputPath)
 	if err != nil {
-		return YmStreams{}, err
+		return nil, err
 	}
 
-	ymStreams, err := CreateYmStreams(dat)
-	return ymStreams, err
+	rawRegisters, err := LoadRawRegisters(dat)
+	if err != nil {
+		return nil, err
+	}
+	ymStr := RemapFromRaw(rawRegisters)
+	return ymStr, nil
 }
 
 // General packing statistics
@@ -366,7 +350,7 @@ type PackStats struct {
 }
 
 // Core function to ack a YM3 data file and return an encoded array of bytes.
-func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
+func PackAll(ymStr *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	// Compression settings
 	useCheapest := false
 
@@ -392,7 +376,7 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 		} else {
 			return EmptySlice(), fmt.Errorf("unknown encoder ID: (%d)", fileCfg.encoder)
 		}
-		regData := ymData.streamData[strmIdx]
+		regData := ymStr.streamData[strmIdx]
 		packed := &packedStreams[strmIdx]
 
 		tokens := TokenizeLazy(enc, regData, useCheapest, streamCfg)
@@ -486,7 +470,7 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	outputData = EncWord(outputData, uint16(Sum(fileCfg.cacheSizes)))
 
 	// 1) Output size in VBLs
-	outputData = EncLong(outputData, uint32(ymData.numVbls))
+	outputData = EncLong(outputData, uint32(ymStr.numVbls))
 
 	// 2) Order of registers
 	outputData = append(outputData, inverseRegOrder...)
@@ -511,7 +495,7 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	}
 
 	if fileCfg.report {
-		origSize := ymData.dataSize
+		origSize := ymStr.dataSize
 		packedSize := len(outputData)
 		cacheSize := Sum(fileCfg.cacheSizes)
 		totalSize := cacheSize + packedSize
@@ -528,14 +512,14 @@ func PackAll(ymData *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 
 // Pack a file with custom config like cache size.
 func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) error {
-	ymData, err := LoadStreamFile(inputPath)
+	ymStr, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
 	}
 
 	fileCfg.report = true
 	fileCfg.verify = true
-	packedData, err := PackAll(&ymData, fileCfg)
+	packedData, err := PackAll(ymStr, fileCfg)
 	if err != nil {
 		return err
 	}
@@ -552,13 +536,13 @@ type MinpackResult struct {
 
 // Choose the cache size which gives minimal sum of
 // [packed file size] + [cache size]
-func MinpackFindCacheSize(ymData *YmStreams, minCacheSize int, maxCacheSize int,
+func MinpackFindCacheSize(ymStr *YmStreams, minCacheSize int, maxCacheSize int,
 	cacheSizeStep int, phase string) (int, error) {
 	messages := make(chan MinpackResult, 5)
 
 	// Async func to pack the file and return sizes
-	FindPackedSizeFunc := func(regCacheSize int, ymData *YmStreams, cfg FilePackConfig) {
-		packedData, err := PackAll(ymData, cfg)
+	FindPackedSizeFunc := func(regCacheSize int, ymStr *YmStreams, cfg FilePackConfig) {
+		packedData, err := PackAll(ymStr, cfg)
 		if err != nil {
 			fmt.Println(err)
 			messages <- MinpackResult{0, 0, 0}
@@ -574,7 +558,7 @@ func MinpackFindCacheSize(ymData *YmStreams, minCacheSize int, maxCacheSize int,
 		cfg.verbose = false
 		cfg.encoder = 1
 		cfg.verify = false
-		go FindPackedSizeFunc(cacheSize, ymData, cfg)
+		go FindPackedSizeFunc(cacheSize, ymStr, cfg)
 	}
 
 	// Receive results and find the smallest
@@ -603,19 +587,19 @@ func MinpackFindCacheSize(ymData *YmStreams, minCacheSize int, maxCacheSize int,
 // Pack file to be played back with low CPU (single cache size for
 // all registers)
 func CommandQuick(inputPath string, outputPath string) error {
-	ymData, err := LoadStreamFile(inputPath)
+	ymStr, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("---- Pass 1 ----")
-	smallestCacheSize, err := MinpackFindCacheSize(&ymData, 64, 1024, 32, "broad")
+	smallestCacheSize, err := MinpackFindCacheSize(ymStr, 64, 1024, 32, "broad")
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("---- Pass 2 ----")
-	smallestCacheSize, err = MinpackFindCacheSize(&ymData, smallestCacheSize-32,
+	smallestCacheSize, err = MinpackFindCacheSize(ymStr, smallestCacheSize-32,
 		smallestCacheSize+32, 2, "narrow")
 	if err != nil {
 		return err
@@ -627,7 +611,7 @@ func CommandQuick(inputPath string, outputPath string) error {
 	fileCfg.encoder = 1
 	fileCfg.report = true
 	fileCfg.verify = true
-	packedData, err := PackAll(&ymData, fileCfg)
+	packedData, err := PackAll(ymStr, fileCfg)
 	if err != nil {
 		return err
 	}
@@ -678,7 +662,7 @@ type SmallResult struct {
 }
 
 func CommandSmall(inputPath string, outputPath string) error {
-	ymData, err := LoadStreamFile(inputPath)
+	ymStr, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
 	}
@@ -695,12 +679,12 @@ func CommandSmall(inputPath string, outputPath string) error {
 	messages := make(chan SmallResult, 15)
 
 	// Async func to pack the file and return sizes
-	FindPackedSizeFunc := func(strmIdx int, regCacheSize int, ymData *YmStreams) {
+	FindPackedSizeFunc := func(strmIdx int, regCacheSize int, ymStr *YmStreams) {
 		enc := Encoder_v1{0}
 		var cfg StreamPackCfg
 		cfg.bufferSize = regCacheSize
 		cfg.verbose = false
-		regData := ymData.streamData[strmIdx]
+		regData := ymStr.streamData[strmIdx]
 		tokens := TokenizeLazy(&enc, regData, true, cfg)
 		packedData := enc.Encode(tokens, regData)
 		if err != nil {
@@ -717,7 +701,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 
 		// Launch...
 		for size := minSize; size < maxSize; size += step {
-			go FindPackedSizeFunc(strmIdx, size, &ymData)
+			go FindPackedSizeFunc(strmIdx, size, ymStr)
 		}
 
 		// ... Collect.
@@ -776,7 +760,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 	}
 
 	// Write out a final minimal file
-	packedFile, err := PackAll(&ymData, smallCfg)
+	packedFile, err := PackAll(ymStr, smallCfg)
 	if err != nil {
 		return err
 	}
@@ -811,21 +795,15 @@ func CommandSimple(inputPath string, outputPath string) error {
 		return err
 	}
 
-	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3Header) {
-		return errors.New("not a YM3 file")
+	rawRegs, err := LoadRawRegisters(data)
+	if err != nil {
+		return err
 	}
-
-	// There are 14 regs in the original file
-	dataSize := len(data) - 4
-	if dataSize%numYmRegs != 0 {
-		return errors.New("unexpected data size")
-	}
-
-	numFrames := dataSize / numYmRegs
+	numFrames := len(rawRegs.data[0])
 
 	// The format of the output is
 	// 2 bytes -- header "YU"
-	// 2 bytes -- number of frames to play
+	// 4 bytes -- number of frames to play
 	// Followed by blocks of 14 bytes with the full set of register data per frame.
 	var outputData []byte
 	outputData = EncByte(outputData, 'Y')
@@ -849,17 +827,11 @@ func CommandDelta(inputPath string, outputPath string) error {
 		return err
 	}
 
-	if len(data) < 4 || !reflect.DeepEqual(data[:4], ym3Header) {
-		return errors.New("not a YM3 file")
+	rawRegs, err := LoadRawRegisters(data)
+	if err != nil {
+		return err
 	}
-
-	// There are 14 regs in the original file
-	dataSize := len(data) - 4
-	if dataSize%numYmRegs != 0 {
-		return errors.New("unexpected data size")
-	}
-
-	numFrames := dataSize / numYmRegs
+	numFrames := len(rawRegs.data[0])
 
 	// The format of the output is
 	// 2 bytes -- header "YU"

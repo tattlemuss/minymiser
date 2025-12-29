@@ -51,7 +51,7 @@ The order of the file data is:
 
 * a fixed-size header
 * the "cache set" information
-* the 13 packed streams themselves.
+* the 13 packed streams themselves, with tokens interleaved by order of usage
 
 All data is packed contiguously without padding unless specified.
 All u16/u32 values are big-endian.
@@ -67,7 +67,7 @@ Header format:
 	| u32     | Number of frames of music
 	| u8[13]  | "remap table" Mapping from the 13 streams in the file to its logical meaning.
 	| u8      | Empty padding for word alignment.
-	| u32[13] | Offsets to the packed data for each stream, relative to the start of the entire file.
+	| ...     | Packed stream data, interleaved for usage
 
 Cache set format:
 
@@ -139,6 +139,20 @@ There is no marker to flag "end of stream". The length of the stream is determin
 There is a reference implementation of the token decoder in the Decode() function of "encoder_v1.go".
 Although it is written in Go language, it should serve as reasonable pseudocode. I even added some
 comments!
+
+Stream Interleave
+-----------------
+To reduce file format overhead, all 13 streams are now "interleaved" by time. That is, the tokens
+for each stream are not stored separately, but each token for each frame is packed into one continuous datastream.
+The pseudocode for packing is
+
+	for F in frames:
+ 		for S in streams:
+ 			add_token_for_this_stream_and_frame(S, N)
+
+When unpacking, the decoder can simply read the next token for the correct stream from the single,
+interleaved data.
+
 
 Cache Set Example
 -----------------

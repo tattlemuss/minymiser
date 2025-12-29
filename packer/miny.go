@@ -363,29 +363,51 @@ type PackStats struct {
 	matchSize  int
 }
 
+// Returns total population of map, and entropy per sample
+func Entropy(m *map[int]int) (float64, int) {
+	tot := 0
+	for k := range *m {
+		cnt := (*m)[k]
+		tot += cnt
+	}
+
+	// We can now calc the entropy too
+	var entropy float64 = 0
+	for k := range *m {
+		cnt := (*m)[k]
+		prob := (float64(cnt) / float64(tot))
+		ln := math.Log2(prob)
+		entropy -= prob * ln
+	}
+	return entropy, tot
+}
+
 func PrintMap(m *map[int]int) {
 	max := 0
-	tot := 0
 	keys := make([]int, 0, len(*m))
 	for k := range *m {
 		keys = append(keys, k)
 		cnt := (*m)[k]
-		tot += cnt
 		if cnt > max {
 			max = cnt
 		}
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i] > keys[j]
-	})
-	for k := range keys {
-		cnt := (*m)[k]
-		dup := 80.0 * cnt / max
+	entropy, tot := Entropy(m)
+	fmt.Printf("Entropy: %f bits per value (%f total bytes)\n", entropy, float64(tot)*entropy/8)
 
-		if dup != 0 {
-			fmt.Printf("[% 4d] %s %d (%v%%)\n", k, strings.Repeat("*", int(dup)), cnt, cnt*100.0/tot)
-		} else {
-			fmt.Printf("[% 4d] %d\n", k, cnt)
+	if false {
+		sort.Slice(keys, func(i, j int) bool {
+			return keys[i] > keys[j]
+		})
+		for k := range keys {
+			cnt := (*m)[k]
+			dup := 80.0 * cnt / max
+
+			if dup != 0 {
+				fmt.Printf("[% 4d] %s %d (%v%%)\n", k, strings.Repeat("*", int(dup)), cnt, cnt*100.0/tot)
+			} else {
+				fmt.Printf("[% 4d] %d\n", k, cnt)
+			}
 		}
 	}
 }

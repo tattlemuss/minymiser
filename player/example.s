@@ -72,6 +72,9 @@ modplay_loop:
 	move.l	old_c,$114.w
 	move.b	#7,$ffff8800.w			; mixer reg
 	move.b	#%00111111,$ffff8802.w		; suppress all channels
+	move.l	#$08000000,$ffff8800.w		; volume A
+	move.l	#$09000000,$ffff8800.w		; volume B
+	move.l	#$0a000000,$ffff8800.w		; volume C
 	move.w	#$2300,sr			; interrupts on
 
 	clr.w	-(a7)

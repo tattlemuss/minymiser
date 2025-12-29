@@ -361,6 +361,7 @@ type PackStats struct {
 	numMatches int
 	numTokens  int
 	matchSize  int
+	litSize    int
 }
 
 // Returns total population of map, and entropy per sample
@@ -395,11 +396,11 @@ func PrintMap(m *map[int]int) float64 {
 	entropy, tot := Entropy(m)
 	totalBytes := float64(tot) * entropy / 8
 	fmt.Printf("Entropy: %f bits per value (%f total bytes)\n", entropy, totalBytes)
+	sort.Slice(keys, func(i, j int) bool {
+		return (*m)[keys[i]] > (*m)[keys[j]]
+	})
 
-	if true {
-		sort.Slice(keys, func(i, j int) bool {
-			return (*m)[keys[i]] > (*m)[keys[j]]
-		})
+	if false {
 		accum := 0
 		for _, k := range keys {
 			cnt := (*m)[k]
@@ -417,6 +418,55 @@ func PrintMap(m *map[int]int) float64 {
 				break
 			}
 		}
+	}
+	// Let's do an experiment
+	// If the value is in the top 6, encode as 4 bits
+	// else encode as 8 bits (0-256) etc
+	for prefixSize := 1; prefixSize < 8; prefixSize++ {
+		testSize := 0
+		for idx, k := range keys {
+			tmp := 0
+			cnt := (*m)[k]
+			// 0-5 entries (6 bits)
+			// 0		0
+			// 10		1
+			// 110		2
+			// 1110		3
+			// 11110	4
+			// 111110	5
+			if idx < prefixSize {
+				testSize += (idx + 1) * cnt // 11110 e.g.
+				continue
+			}
+			// Encode old-style
+			tmp = prefixSize // 111111
+			for k > 255 {
+				tmp += 8
+				k -= 255
+			}
+			tmp += 8
+			testSize += tmp * cnt
+		}
+		fmt.Printf("Experimental test size, prefix %d bits -> %d bytes\n", prefixSize, testSize/8)
+	}
+
+	{
+		testSize := 0
+		for _, k := range keys {
+			tmp := 0
+			cnt := (*m)[k]
+			tmp = 8
+			if k >= 126 {
+				k -= 126
+				for k > 255 {
+					tmp += 8
+					k -= 255
+				}
+				tmp += 8
+			}
+			testSize += tmp * cnt
+		}
+		fmt.Printf("Orig test size: %d bytes\n", testSize/8)
 	}
 	return totalBytes
 }
@@ -463,6 +513,7 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 				stats.numMatches++
 				stats.matchSize += t.len
 			} else {
+				stats.litSize += t.len
 				stats.litlenMap[t.len]++
 			}
 		}
@@ -600,6 +651,7 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 			optimBytes += PrintMap(&stats.lenMap)
 			fmt.Println("\nLiteral Lengths:")
 			optimBytes += PrintMap(&stats.litlenMap)
+			optimBytes += float64(stats.litSize)
 			fmt.Printf("Total optimum bytes: %.1f\n", optimBytes)
 		}
 	}

@@ -35,9 +35,10 @@ func (e *Encoder_v1) Cost(litCount int, m Match) int {
 
 	// Check if literal count will increase cost
 	for i := 0; i < litCount; i += 1 {
-		if tmpLiterals == 0 {
+		switch tmpLiterals {
+		case 0:
 			cost += 1 //  // cost of switching match->list
-		} else if tmpLiterals == 127 {
+		case 127:
 			// cost of swtiching to extra-byte encoing
 			cost += 2 // needs 2 extra bytes
 		}

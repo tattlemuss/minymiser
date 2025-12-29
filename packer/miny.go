@@ -85,9 +85,10 @@ type YmStreams struct {
 }
 
 func GetEncoder(choice int) (Encoder, error) {
-	if choice == 1 {
+	switch choice {
+	case 1:
 		return &Encoder_v1{0}, nil
-	} else if choice == 2 {
+	case 2:
 		return &Encoder_v2{0}, nil
 	}
 

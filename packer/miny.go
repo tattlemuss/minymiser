@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 )
@@ -653,7 +654,7 @@ type PerRegStats struct {
 }
 
 func FindSmallestTotalSize(stats *PerRegStats, regs []RegPackSizes) (int, int) {
-	smallestTotal := 99999999999
+	smallestTotal := math.MaxInt
 	smallestIndex := -1
 
 	for key := range stats.totalPackedSizes {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -376,7 +375,9 @@ func PrintMap(m *map[int]int) {
 			max = cnt
 		}
 	}
-	slices.Sort(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] > keys[j]
+	})
 	for k := range keys {
 		cnt := (*m)[k]
 		dup := 80.0 * cnt / max

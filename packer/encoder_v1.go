@@ -87,36 +87,43 @@ func (e *Encoder_v1) Encode(t *Token, output []byte, input []byte) []byte {
 func (e *Encoder_v1) Decode(input []byte) []byte {
 	output := make([]byte, 0)
 	head := 0
+	// Loop over all tokens
 	for head < len(input) {
+		// Choose either match or literal, depending on the top bit of the next byte
 		top := input[head]
 		head++
 		if (top & 0x80) != 0 {
 			// Literals
-			// Length only
+			// These are encoded as "Length only"
 			var count int = int(top & 0x7f)
 			if count == 0 {
 				count = int(input[head]) << 8
 				count |= int(input[head+1])
 				head += 2
 			}
+			// Copy the next "count" bytes of the packed stream to the output
 			output = append(output, input[head:head+count]...)
 			head += count
 		} else {
 			// Match
-			// Length, then Offset
+			// Encoded as "Length, then Offset"
 			var count int = int(top & 0x7f)
 			if count == 0 {
 				count = int(input[head]) << 8
 				count |= int(input[head+1])
 				head += 2
 			}
+			// Decode the offset
 			var offset int = 0
+			// The "for" below acts as a "while" loop.
 			for input[head] == 0 {
 				offset += 255
 				head++
 			}
 			offset += int(input[head])
 			head++
+
+			// Copy bytes from the previously-decoded data, at a distance of "offset"
 			matchPos := len(output) - offset
 			for count > 0 {
 				output = append(output, output[matchPos])

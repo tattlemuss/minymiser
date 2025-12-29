@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
+	"strings"
 )
 
 // This is the number of registers - 1, since the mixer
@@ -92,13 +94,15 @@ func GetEncoder(choice int) (Encoder, error) {
 	return nil, fmt.Errorf("unknown encoder ID: (%d)", choice)
 }
 
+type UserConfig struct {
+	verbose bool
+	encoder int // 1 or 2
+}
+
 // Describes packing config for a whole file
 type FilePackConfig struct {
 	cacheSizes []int // cache size for each individual stream
-	verbose    bool
-	verify     bool
-	report     bool // print output report to stdout
-	encoder    int  // 1 or 2
+	uc         UserConfig
 }
 
 // Describes packing config for a single register stream
@@ -350,36 +354,64 @@ func LoadStreamFile(inputPath string) (*YmStreams, error) {
 // General packing statistics
 type PackStats struct {
 	lenMap     map[int]int // length -> count
-	distMap    map[int]int // dist -> cound
+	distMap    map[int]int // dist -> count
+	litlenMap  map[int]int
 	offs       []int
 	lens       []int
-	litlens    []int
-	numNatches int
+	numMatches int
 	numTokens  int
+	matchSize  int
+}
+
+func PrintMap(m *map[int]int) {
+	max := 0
+	tot := 0
+	keys := make([]int, 0, len(*m))
+	for k := range *m {
+		keys = append(keys, k)
+		cnt := (*m)[k]
+		tot += cnt
+		if cnt > max {
+			max = cnt
+		}
+	}
+	slices.Sort(keys)
+	for k := range keys {
+		cnt := (*m)[k]
+		dup := 80.0 * cnt / max
+
+		if dup != 0 {
+			fmt.Printf("[% 4d] %s %d (%v%%)\n", k, strings.Repeat("*", int(dup)), cnt, cnt*100.0/tot)
+		} else {
+			fmt.Printf("[% 4d] %d\n", k, cnt)
+		}
+	}
 }
 
 // Core function to ack a YM3 data file and return an encoded array of bytes.
-func PackAll(ymStr *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
+func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
+	report bool, verify bool) ([]byte, error) {
 	// Compression settings
 	useCheapest := false
 
 	streamCfg := StreamPackCfg{}
-	streamCfg.verbose = fileCfg.verbose
+	streamCfg.verbose = fileCfg.uc.verbose
 
 	var stats PackStats
 	stats.lenMap = make(map[int]int)
 	stats.distMap = make(map[int]int)
+	stats.litlenMap = make(map[int]int)
 
 	// Records the tokens needed
 	tokensPerStream := make([][]Token, numStreams)
-	enc, err := GetEncoder(fileCfg.encoder)
+	enc, err := GetEncoder(fileCfg.uc.encoder)
 	if err != nil {
 		return nil, err
 	}
 
 	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
 		streamCfg.bufferSize = fileCfg.cacheSizes[strmIdx]
-		if fileCfg.verbose {
+		if fileCfg.uc.verbose {
 			fmt.Println("Packing register", strmIdx, streamNames[strmIdx])
 		}
 		// Pack
@@ -391,15 +423,14 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 		for i := range tokens {
 			t := &tokens[i]
 			if t.isMatch {
-				if t.len < 512 {
-					stats.lenMap[t.len]++
-				}
+				stats.lenMap[t.len]++
 				stats.distMap[t.off]++
 				stats.offs = append(stats.offs, t.off)
 				stats.lens = append(stats.lens, t.len)
-				stats.numNatches++
+				stats.numMatches++
+				stats.matchSize += t.len
 			} else {
-				stats.litlens = append(stats.litlens, t.len)
+				stats.litlenMap[t.len]++
 			}
 		}
 		stats.numTokens += len(tokens)
@@ -425,13 +456,13 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	setHeaderData := []byte{}
 	var streamId byte = 0
 	for cacheSize, set := range sets {
-		if fileCfg.verbose {
+		if fileCfg.uc.verbose {
 			fmt.Printf("Adding set with cache size %d\n", cacheSize)
 		}
 		setHeaderData = EncWord(setHeaderData, uint16(len(set)-1))
 		setHeaderData = EncWord(setHeaderData, uint16(cacheSize))
 		for _, reg := range set {
-			if fileCfg.verbose {
+			if fileCfg.uc.verbose {
 				fmt.Printf(" - reg stream %d (%s)\n", reg, streamNames[reg])
 			}
 			inverseRegOrder[reg] = streamId
@@ -511,7 +542,7 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 	// ... then the data
 	outputData = append(outputData, encodedTokens...)
 
-	if fileCfg.report {
+	if report {
 		origSize := ymStr.dataSize
 		packedSize := len(outputData)
 		cacheSize := Sum(fileCfg.cacheSizes)
@@ -524,6 +555,19 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig) ([]byte, error) {
 		fmt.Printf("Num cache sizes:  %6d (smaller=faster)\n", len(sets))
 		fmt.Printf("Total cache size: %6d\n", cacheSize)
 		fmt.Printf("Total RAM:        %6d (%.1f%%)\n", totalSize, Percent(totalSize, origSize))
+
+		if fileCfg.uc.verbose {
+			fmt.Printf("Num matches       %6d (%.1f%%)\n", stats.numMatches, Percent(stats.numMatches, stats.numTokens))
+			fmt.Printf("Num tokens        %6d (%.2f tokens/frame)\n", stats.numTokens, float32(stats.numTokens)/float32(ymStr.numVbls))
+
+			fmt.Printf("Matched size      %6d (%.1f%%)\n", stats.matchSize, Percent(stats.matchSize, origSize))
+			fmt.Println("\nMatch Distances:")
+			PrintMap(&stats.distMap)
+			fmt.Println("\nMatch Lengths:")
+			PrintMap(&stats.lenMap)
+			fmt.Println("\nLiteral Lengths:")
+			PrintMap(&stats.litlenMap)
+		}
 	}
 
 	return outputData, nil
@@ -536,9 +580,7 @@ func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) 
 		return err
 	}
 
-	fileCfg.report = true
-	fileCfg.verify = true
-	packedData, err := PackAll(ymStr, fileCfg)
+	packedData, err := PackAll(ymStr, fileCfg, true, true)
 	if err != nil {
 		return err
 	}
@@ -556,12 +598,12 @@ type MinpackResult struct {
 // Choose the cache size which gives minimal sum of
 // [packed file size] + [cache size]
 func MinpackFindCacheSize(ymStr *YmStreams, minCacheSize int, maxCacheSize int,
-	cacheSizeStep int, phase string) (int, error) {
+	cacheSizeStep int, phase string, encoder int) (int, error) {
 	messages := make(chan MinpackResult, 5)
 
 	// Async func to pack the file and return sizes
 	FindPackedSizeFunc := func(regCacheSize int, ymStr *YmStreams, cfg FilePackConfig) {
-		packedData, err := PackAll(ymStr, cfg)
+		packedData, err := PackAll(ymStr, cfg, false, false)
 		if err != nil {
 			fmt.Println(err)
 			messages <- MinpackResult{0, 0, 0}
@@ -574,9 +616,8 @@ func MinpackFindCacheSize(ymStr *YmStreams, minCacheSize int, maxCacheSize int,
 	for cacheSize := minCacheSize; cacheSize <= maxCacheSize; cacheSize += cacheSizeStep {
 		cfg := FilePackConfig{}
 		cfg.cacheSizes = FilledSlice(numStreams, cacheSize)
-		cfg.verbose = false
-		cfg.encoder = 1
-		cfg.verify = false
+		cfg.uc.verbose = false
+		cfg.uc.encoder = encoder
 		go FindPackedSizeFunc(cacheSize, ymStr, cfg)
 	}
 
@@ -605,32 +646,29 @@ func MinpackFindCacheSize(ymStr *YmStreams, minCacheSize int, maxCacheSize int,
 
 // Pack file to be played back with low CPU (single cache size for
 // all registers)
-func CommandQuick(inputPath string, outputPath string) error {
+func CommandQuick(inputPath string, outputPath string, uc UserConfig) error {
 	ymStr, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("---- Pass 1 ----")
-	smallestCacheSize, err := MinpackFindCacheSize(ymStr, 64, 1024, 32, "broad")
+	smallestCacheSize, err := MinpackFindCacheSize(ymStr, 64, 1024, 32, "broad", uc.encoder)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("---- Pass 2 ----")
 	smallestCacheSize, err = MinpackFindCacheSize(ymStr, smallestCacheSize-32,
-		smallestCacheSize+32, 2, "narrow")
+		smallestCacheSize+32, 2, "narrow", uc.encoder)
 	if err != nil {
 		return err
 	}
 
 	fileCfg := FilePackConfig{}
-	fileCfg.verbose = false
+	fileCfg.uc = uc
 	fileCfg.cacheSizes = FilledSlice(numStreams, smallestCacheSize)
-	fileCfg.encoder = 1
-	fileCfg.report = true
-	fileCfg.verify = true
-	packedData, err := PackAll(ymStr, fileCfg)
+	packedData, err := PackAll(ymStr, fileCfg, true, true)
 	if err != nil {
 		return err
 	}
@@ -680,7 +718,7 @@ type SmallResult struct {
 	packedSize int
 }
 
-func CommandSmall(inputPath string, outputPath string) error {
+func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 	ymStr, err := LoadStreamFile(inputPath)
 	if err != nil {
 		return err
@@ -742,10 +780,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 
 	statsForRegs := make([]RegPackSizes, 0)
 	var smallCfg FilePackConfig
-	smallCfg.encoder = 1
-	smallCfg.verbose = false
-	smallCfg.verify = true
-	smallCfg.report = true
+	smallCfg.uc = uc
 	smallCfg.cacheSizes = make([]int, numStreams)
 
 	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
@@ -782,7 +817,7 @@ func CommandSmall(inputPath string, outputPath string) error {
 	}
 
 	// Write out a final minimal file
-	packedFile, err := PackAll(ymStr, smallCfg)
+	packedFile, err := PackAll(ymStr, smallCfg, true, true)
 	if err != nil {
 		return err
 	}
@@ -942,30 +977,37 @@ func PrintUsage(commands map[string]CliCommand) {
 }
 
 func main() {
-	packDlags := flag.NewFlagSet("pack", flag.ExitOnError)
+	uc := UserConfig{}
+	customFlags := flag.NewFlagSet("pack", flag.ExitOnError)
+	customFlags.BoolVar(&uc.verbose, "verbose", false, "verbose output")
+	customFlags.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
 	//unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
+
 	quickFlags := flag.NewFlagSet("minpack", flag.ExitOnError)
+	quickFlags.BoolVar(&uc.verbose, "verbose", false, "verbose output")
+	quickFlags.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
+	packOptSize := customFlags.Int("cachesize", numStreams*512, "overall cache size in bytes")
+
 	smallFlags := flag.NewFlagSet("smallest", flag.ExitOnError)
+	smallFlags.BoolVar(&uc.verbose, "verbose", false, "verbose output")
+	smallFlags.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
+
 	simpleFlags := flag.NewFlagSet("simple", flag.ExitOnError)
 	deltaFlags := flag.NewFlagSet("delta", flag.ExitOnError)
 	helpFlags := flag.NewFlagSet("help", flag.ExitOnError)
 
-	packOptSize := packDlags.Int("cachesize", numStreams*512, "overall cache size in bytes")
-	packOptVerbose := packDlags.Bool("verbose", false, "verbose output")
-	packOptEncoder := packDlags.Int("encoder", 1, "encoder version (1|2)")
 	var commands map[string]CliCommand
 
 	cmdCustom := func(args []string) error {
-		packDlags.Parse(args)
-		files := packDlags.Args()
+		customFlags.Parse(args)
+		files := customFlags.Args()
 		if len(files) != 2 {
 			fmt.Println("'pack' command: expected <input> <output> arguments")
 			os.Exit(1)
 		}
 		cfg := FilePackConfig{}
 		cfg.cacheSizes = FilledSlice(numStreams, *packOptSize/numStreams)
-		cfg.verbose = *packOptVerbose
-		cfg.encoder = *packOptEncoder
+		cfg.uc = uc
 		return CommandCustom(files[0], files[1], cfg)
 	}
 
@@ -976,7 +1018,7 @@ func main() {
 			fmt.Println("'quick' command: expected <input> <output> arguments")
 			os.Exit(1)
 		}
-		return CommandQuick(files[0], files[1])
+		return CommandQuick(files[0], files[1], uc)
 	}
 
 	cmdSmall := func(args []string) error {
@@ -986,7 +1028,7 @@ func main() {
 			fmt.Println("'small' command: expected <input> <output> arguments")
 			os.Exit(1)
 		}
-		return CommandSmall(files[0], files[1])
+		return CommandSmall(files[0], files[1], uc)
 	}
 
 	cmdSimple := func(args []string) error {
@@ -1027,7 +1069,7 @@ func main() {
 	}
 
 	commands = map[string]CliCommand{
-		"pack": {cmdCustom, packDlags, "<input> <output>", "pack with custom settings"},
+		"pack": {cmdCustom, customFlags, "<input> <output>", "pack with custom settings"},
 		//"unpack":   {nil, unpackCmd, "<input> <output>", "unpack to YM3 format (TBD)"},
 		"quick":  {cmdQuick, quickFlags, "<input> <output>", "pack to small with quick runtime"},
 		"small":  {cmdSmall, smallFlags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},

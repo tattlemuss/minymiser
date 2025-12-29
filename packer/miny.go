@@ -382,7 +382,7 @@ func Entropy(m *map[int]int) (float64, int) {
 	return entropy, tot
 }
 
-func PrintMap(m *map[int]int) {
+func PrintMap(m *map[int]int) float64 {
 	max := 0
 	keys := make([]int, 0, len(*m))
 	for k := range *m {
@@ -393,23 +393,32 @@ func PrintMap(m *map[int]int) {
 		}
 	}
 	entropy, tot := Entropy(m)
-	fmt.Printf("Entropy: %f bits per value (%f total bytes)\n", entropy, float64(tot)*entropy/8)
+	totalBytes := float64(tot) * entropy / 8
+	fmt.Printf("Entropy: %f bits per value (%f total bytes)\n", entropy, totalBytes)
 
-	if false {
+	if true {
 		sort.Slice(keys, func(i, j int) bool {
-			return keys[i] > keys[j]
+			return (*m)[keys[i]] > (*m)[keys[j]]
 		})
-		for k := range keys {
+		accum := 0
+		for _, k := range keys {
 			cnt := (*m)[k]
 			dup := 80.0 * cnt / max
+			accum += cnt
+			pc := Percent(cnt, tot)
+			total_pc := Percent(accum, tot)
 
 			if dup != 0 {
-				fmt.Printf("[% 4d] %s %d (%v%%)\n", k, strings.Repeat("*", int(dup)), cnt, cnt*100.0/tot)
+				fmt.Printf("[% 4d] %s %d (%.1f%% -> %.1f%%)\n", k, strings.Repeat("*", int(dup)), cnt, pc, total_pc)
 			} else {
 				fmt.Printf("[% 4d] %d\n", k, cnt)
 			}
+			if total_pc > 95 {
+				break
+			}
 		}
 	}
+	return totalBytes
 }
 
 // Core function to ack a YM3 data file and return an encoded array of bytes.
@@ -586,11 +595,12 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 
 			fmt.Printf("Matched size      %6d (%.1f%%)\n", stats.matchSize, Percent(stats.matchSize, origSize))
 			fmt.Println("\nMatch Distances:")
-			PrintMap(&stats.distMap)
+			optimBytes := PrintMap(&stats.distMap)
 			fmt.Println("\nMatch Lengths:")
-			PrintMap(&stats.lenMap)
+			optimBytes += PrintMap(&stats.lenMap)
 			fmt.Println("\nLiteral Lengths:")
-			PrintMap(&stats.litlenMap)
+			optimBytes += PrintMap(&stats.litlenMap)
+			fmt.Printf("Total optimum bytes: %.1f\n", optimBytes)
 		}
 	}
 

@@ -27,11 +27,16 @@ jobs:
         cd packer
         mkdir bin
         go get
+        go build
         GOOS=windows GOARCH=amd64 go build -o bin/miny-amd64-win.exe .
         GOOS=darwin  GOARCH=amd64 go build -o bin/miny-amd64-darwin .
         GOOS=darwin  GOARCH=arm64 go build -o bin/miny-arm64-darwin .
+    - name: Test
+      run: |
+        cd packer
+        ./miny help
+        ./miny small --verbose ../test_data/sanxion.ym out.ymp
         ls -l
-
     - name: "Upload artifacts"
       uses: actions/upload-artifact@v4
       with:

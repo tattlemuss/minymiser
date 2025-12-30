@@ -10,7 +10,6 @@ func costsForMatches(enc Encoder, test *testing.T) {
 	var m Match
 
 	input := make([]byte, 512)
-	var encoded []byte
 	t.isMatch = true
 	for tlen := 1; tlen < 512; tlen++ {
 		m.len = tlen
@@ -19,11 +18,11 @@ func costsForMatches(enc Encoder, test *testing.T) {
 			m.off = toff
 			t.off = toff
 			cost := enc.Cost(0, m)
-			encoded = make([]byte, 0)
-			encoded = enc.Encode(&t, encoded, input)
-			if len(encoded) != cost {
+			encoded := NewPackStream()
+			enc.Encode(&t, encoded, input)
+			if encoded.BitCount() != cost {
 				test.Errorf("match_cost failure, len %d off %d: got %d, want %d",
-					tlen, toff, len(encoded), cost)
+					tlen, toff, encoded.BitCount(), cost)
 			}
 		}
 	}
@@ -34,16 +33,15 @@ func costsForLits(enc Encoder, test *testing.T) {
 	var m Match
 
 	input := make([]byte, 512)
-	var encoded []byte
 
 	t.isMatch = false
 	for tlen := 1; tlen < 512; tlen++ {
 		cost := enc.Cost(tlen, m)
 		t.len = tlen
-		encoded = make([]byte, 0)
-		encoded = enc.Encode(&t, encoded, input)
-		if len(encoded) != cost {
-			test.Errorf("lit_cost failure: len %d: result %d, expected %d", tlen, len(encoded), cost)
+		encoded := NewPackStream()
+		enc.Encode(&t, encoded, input)
+		if encoded.BitCount() != cost {
+			test.Errorf("lit_cost failure: len %d: result %d, expected %d", tlen, encoded.BitCount(), cost)
 		}
 		enc.Reset()
 	}
@@ -55,14 +53,14 @@ func TestEncV2(t *testing.T) {
 		matchlen, matchoff int
 		want               int
 	}{
-		{1, 0, 0, 2}, // 1 literal == 1 byte + 1 lit
-		{2, 0, 0, 3},
-		{15, 0, 0, 15 + 1},
-		{16, 0, 0, 16 + 2},
-		{255, 0, 0, 255 + 2},
-		{256, 0, 0, 256 + 4}, // 00 00 00 256
+		{1, 0, 0, 2 * 8}, // 1 literal == 1 byte + 1 lit
+		{2, 0, 0, 3 * 8},
+		{15, 0, 0, (15 + 1) * 8},
+		{16, 0, 0, (16 + 2) * 8},
+		{255, 0, 0, (255 + 2) * 8},
+		{256, 0, 0, (256 + 4) * 8}, // 00 00 00 256
 
-		{0, 1, 1, 1}, // match of 1,1 -> 1 byte
+		{0, 1, 1, 1 * 8}, // match of 1,1 -> 1 byte
 	}
 	var e Encoder_v2
 	for _, tt := range costs {

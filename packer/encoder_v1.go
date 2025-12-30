@@ -4,30 +4,28 @@ type Encoder_v1 struct {
 	numLiterals int
 }
 
-func encodeCount(output []byte, count int, literalFlag byte) []byte {
+func encodeCount(p *PackStream, count int, literalFlag byte) {
 	if count < 128 {
-		output = append(output, byte(count)|literalFlag)
+		p.AddByte(byte(count) | literalFlag)
 	} else {
-		output = append(output, 0|literalFlag)
-		output = EncWord(output, uint16(count))
+		p.AddByte(0 | literalFlag)
+		p.AddWord(uint16(count))
 	}
-	return output
 }
 
-func encodeOffset(output []byte, offset int) []byte {
+func encodeOffset(p *PackStream, offset int) {
 	for offset >= 256 {
 		// 256 can be encoded as "255 + 1"
-		output = append(output, 0)
+		p.AddByte(0)
 		offset -= 255
 	}
 	if offset == 0 {
 		panic("Problem when encoding offset")
 	}
-	output = EncByte(output, byte(offset))
-	return output
+	p.AddByte(byte(offset))
 }
 
-// Return the additional Cost (in bytes) of adding literal(s) and match to an output stream
+// Return the additional Cost (in bits) of adding literal(s) and match to an output stream
 func (e *Encoder_v1) Cost(litCount int, m Match) int {
 	cost := 0
 	tmpLiterals := e.numLiterals
@@ -45,6 +43,7 @@ func (e *Encoder_v1) Cost(litCount int, m Match) int {
 		tmpLiterals += 1
 	}
 
+	cost *= 8
 	cost += e.MatchCost(m)
 	return cost
 }
@@ -68,21 +67,20 @@ func (e *Encoder_v1) MatchCost(m Match) int {
 			offset -= 255
 		}
 	}
-	return cost
+	return cost * 8
 }
 
-func (e *Encoder_v1) Encode(t *Token, output []byte, input []byte) []byte {
+func (e *Encoder_v1) Encode(t *Token, p *PackStream, input []byte) {
 	if t.isMatch {
-		output = encodeCount(output, t.len, 0)
-		output = encodeOffset(output, t.off)
+		encodeCount(p, t.len, 0)
+		encodeOffset(p, t.off)
 	} else {
 		// Encode the literal
-		output = encodeCount(output, t.len, 0x80)
+		encodeCount(p, t.len, 0x80)
 		literals := input[t.off : t.off+t.len]
 		// https://github.com/golang/go/issues/28292
-		output = append(output, literals...)
+		p.AddBytes(literals)
 	}
-	return output
 }
 
 func (e *Encoder_v1) Decode(input []byte) []byte {

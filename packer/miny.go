@@ -137,8 +137,8 @@ func FindLongestMatch(data []byte, head int, distance int) Match {
 
 func FindCheapestMatch(enc Encoder, data []byte, head int, distance int) Match {
 	bestMatch := Match{0, 0}
-	// Any pack rate of less than 1.0 is automatically useless!
-	var bestCost float64 = 1.0
+	// Any pack rate of less than 8 bits/byte is automatically useless
+	var bestCost float64 = 8.0
 	maxDist := distance
 	if head < distance {
 		maxDist = head
@@ -567,7 +567,7 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 
 	// Do the final interleaving of the encoded tokens into a single stream,
 	// knowing the order-per-frame that they will be depacked in
-	encodedTokens := make([]byte, 0)
+	p := NewPackStream()
 	nextTokenFrame := make([]int, numStreams) // frame number when next token gets used
 	nextTokenIndex := make([]int, numStreams) // index in tokensPerStream[x]
 
@@ -582,7 +582,7 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 				// Read the next token from the packed data
 				tIdx := nextTokenIndex[strmIdx]
 				t := tokensPerStream[strmIdx][tIdx]
-				encodedTokens = enc.Encode(&t, encodedTokens, ymStr.streamData[strmIdx])
+				enc.Encode(&t, p, ymStr.streamData[strmIdx])
 
 				// Move on to the next tokem in this stream
 				nextTokenIndex[strmIdx]++
@@ -624,7 +624,7 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 	}
 
 	// ... then the data
-	outputData = append(outputData, encodedTokens...)
+	outputData = append(outputData, p.encodedTokens...)
 
 	if report {
 		origSize := ymStr.dataSize
@@ -829,15 +829,15 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 		cfg.verbose = false
 		regData := ymStr.streamData[strmIdx]
 		tokens := TokenizeLazy(enc, regData, true, cfg)
-		output := make([]byte, 0)
+		p := NewPackStream()
 		for i := 0; i < len(tokens); i++ {
-			output = enc.Encode(&tokens[i], output, regData)
+			enc.Encode(&tokens[i], p, regData)
 		}
 		if err != nil {
 			fmt.Println(err)
 			messages <- SmallResult{strmIdx, 0, 0}
 		} else {
-			messages <- SmallResult{strmIdx, regCacheSize, len(output)}
+			messages <- SmallResult{strmIdx, regCacheSize, p.BitCount()}
 		}
 	}
 

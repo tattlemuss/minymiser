@@ -24,30 +24,28 @@ type Encoder_v2 struct {
 	TODO match length is still a little wasteful.
 */
 
-func encodeCountV2(output []byte, count int) []byte {
+func encodeCountV2(p *PackStream, count int) {
 	if count < 256 {
-		output = append(output, byte(count))
+		p.AddByte(byte(count))
 	} else {
-		output = append(output, 0)
-		output = EncWord(output, uint16(count))
+		p.AddByte(0)
+		p.AddWord(uint16(count))
 	}
-	return output
 }
 
-func encodeOffsetV2(output []byte, offset int) []byte {
+func encodeOffsetV2(p *PackStream, offset int) {
 	for offset >= 256 {
 		// 256 can be encoded as "255 + 1"
-		output = append(output, 0)
+		p.AddByte(0)
 		offset -= 255
 	}
 	if offset == 0 {
 		panic("Problem when encoding offset")
 	}
-	output = EncByte(output, byte(offset))
-	return output
+	p.AddByte(byte(offset))
 }
 
-// Return the additional Cost (in bytes) of adding literal(s) and match to an output stream
+// Return the additional Cost (in bits) of adding literal(s) and match to an output stream
 func (e *Encoder_v2) Cost(litCount int, m Match) int {
 	cost := 0
 	if litCount != 0 {
@@ -73,7 +71,7 @@ func (e *Encoder_v2) litCost(litCount int) int {
 		}
 	}
 	cost += litCount
-	return cost
+	return cost * 8
 }
 
 // Calculate the byte cost of only a match
@@ -101,10 +99,10 @@ func (e *Encoder_v2) matchCost(m Match) int {
 			off -= 255
 		}
 	}
-	return cost
+	return cost * 8
 }
 
-func (e *Encoder_v2) Encode(t *Token, output []byte, input []byte) []byte {
+func (e *Encoder_v2) Encode(t *Token, p *PackStream, input []byte) {
 	if t.isMatch {
 		var startLen byte = 0 // "more" marker
 		var startOff byte = 0 // "more" marker
@@ -114,28 +112,27 @@ func (e *Encoder_v2) Encode(t *Token, output []byte, input []byte) []byte {
 		if t.off <= 0xf {
 			startOff = byte(t.off)
 		}
-		output = append(output, startLen<<4|startOff)
+		p.AddByte(startLen<<4 | startOff)
 		// Now rest of length
 		if t.len > 0xe {
-			output = encodeCountV2(output, t.len)
+			encodeCountV2(p, t.len)
 		}
 		// and rest of offset
 		if t.off > 0xf {
-			output = encodeOffsetV2(output, t.off)
+			encodeOffsetV2(p, t.off)
 		}
 	} else {
 		// Encode the literal
 		if t.len <= 0xf {
-			output = append(output, 0xf0+byte(t.len))
+			p.AddByte(0xf0 + byte(t.len))
 		} else {
-			output = append(output, 0xf0)
-			output = encodeCountV2(output, t.len)
+			p.AddByte(0xf0)
+			encodeCountV2(p, t.len)
 		}
 		// Then copy literals
 		literals := input[t.off : t.off+t.len]
-		output = append(output, literals...)
+		p.AddBytes(literals)
 	}
-	return output
 }
 
 func (e *Encoder_v2) Decode(input []byte) []byte {

@@ -624,7 +624,7 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 	}
 
 	// ... then the data
-	outputData = append(outputData, p.encodedTokens...)
+	outputData = append(outputData, p.byteData...)
 
 	if report {
 		origSize := ymStr.dataSize

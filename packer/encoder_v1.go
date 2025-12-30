@@ -25,49 +25,53 @@ func encodeOffset(p *PackStream, offset int) {
 	p.AddByte(byte(offset))
 }
 
-// Return the additional Cost (in bits) of adding literal(s) and match to an output stream
-func (e *Encoder_v1) Cost(litCount int, m Match) int {
-	cost := 0
-	tmpLiterals := e.numLiterals
-	cost += litCount
-
-	// Check if literal count will increase cost
-	for i := 0; i < litCount; i += 1 {
-		switch tmpLiterals {
-		case 0:
-			cost += 1 //  // cost of switching match->list
-		case 127:
-			// cost of swtiching to extra-byte encoing
-			cost += 2 // needs 2 extra bytes
-		}
-		tmpLiterals += 1
+func (e *Encoder_v1) litCost(count int) int {
+	if count == 0 {
+		return 0
 	}
-
-	cost *= 8
-	cost += e.MatchCost(m)
+	cost := 0
+	if count < 128 {
+		cost = 1 * 8
+	} else {
+		cost = 3 * 8
+	}
+	cost += count * 8 // needs the actual literal data too
 	return cost
 }
 
 // Calculate the byte cost of only a match
-func (e *Encoder_v1) MatchCost(m Match) int {
+func (e *Encoder_v1) matchCost(m Match) int {
 	cost := 0
 	// Match
 	// A match is always new, so apply full cost
 	if m.len > 0 {
 		// length encoding
-		cost = 1
+		cost = 8
 		if m.len >= 128 {
-			cost += 2
+			cost += 2 * 8
 		}
-		// pffset encoding
-		cost += 1
+		// offset encoding
+		cost += 8 // always 1 byte
 		offset := m.off
 		for offset >= 256 {
-			cost++
+			cost += 8
 			offset -= 255
 		}
 	}
-	return cost * 8
+	return cost
+}
+
+// Return the additional Cost (in bits) of adding literal(s) and match to an output stream
+func (e *Encoder_v1) Cost(litCount int, m Match) int {
+	cost := 0
+	if litCount != 0 {
+		// Check if literal count will increase cost
+		currLitCost := e.litCost(e.numLiterals)
+		nextLitCost := e.litCost(e.numLiterals + litCount)
+		cost += (nextLitCost - currLitCost)
+	}
+	cost += e.matchCost(m)
+	return cost
 }
 
 func (e *Encoder_v1) Encode(t *Token, p *PackStream, input []byte) {

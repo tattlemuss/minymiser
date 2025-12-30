@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+func check(condition bool, t *testing.T, msg string, args ...any) {
+	if !condition {
+		t.Errorf("FAIL: " + fmt.Sprintf(msg, args...))
+	}
+}
+
 func costsForMatches(enc Encoder, test *testing.T) {
 	var t Token
 	var m Match
@@ -114,4 +120,22 @@ func TestLitCosts_V2(t *testing.T) {
 	t.Log("Testing lit length for Encoder_v2")
 	var e1 Encoder_v2
 	costsForLits(&e1, t)
+}
+
+func TestPackStreamBits(t *testing.T) {
+	p := NewPackStream()
+	check(len(p.bitData) == 0, t, "bitsize failure")
+	for i := 0; i < 8; i++ {
+		p.AddBit(1)
+		p.AddBit(0)
+	}
+	check(len(p.bitData) == 1, t, "bitsize failure")
+	for i := 0; i < 7; i++ {
+		p.AddBit(1)
+		p.AddBit(0)
+	}
+	check(len(p.bitData) == 2, t, "bitsize failure")
+	check(p.bitData[0] == 0xaaaa, t, "bitdata failure 0")
+	check(p.bitData[1] == 0xaaa8, t, "bitdata failure 1")
+	check(p.bitCount == 30, t, "bitcount = %d", p.bitCount)
 }

@@ -24,6 +24,6 @@ func (p *PackStream) AddWord(input uint16) {
 	p.encodedTokens = append(p.encodedTokens, byte(input&255))
 }
 
-func (p *PackStream) FinalStream() []byte {
-	return p.encodedTokens
+func (p *PackStream) BitCount() int {
+	return len(p.encodedTokens) * 8
 }

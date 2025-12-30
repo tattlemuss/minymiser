@@ -25,7 +25,7 @@ func encodeOffset(p *PackStream, offset int) {
 	p.AddByte(byte(offset))
 }
 
-// Return the additional Cost (in bytes) of adding literal(s) and match to an output stream
+// Return the additional Cost (in bits) of adding literal(s) and match to an output stream
 func (e *Encoder_v1) Cost(litCount int, m Match) int {
 	cost := 0
 	tmpLiterals := e.numLiterals
@@ -43,6 +43,7 @@ func (e *Encoder_v1) Cost(litCount int, m Match) int {
 		tmpLiterals += 1
 	}
 
+	cost *= 8
 	cost += e.MatchCost(m)
 	return cost
 }
@@ -66,7 +67,7 @@ func (e *Encoder_v1) MatchCost(m Match) int {
 			offset -= 255
 		}
 	}
-	return cost
+	return cost * 8
 }
 
 func (e *Encoder_v1) Encode(t *Token, p *PackStream, input []byte) {

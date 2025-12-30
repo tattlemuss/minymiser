@@ -16,6 +16,7 @@ type Match struct {
 // Interface for being able to encode a stream into a packed format.
 type Encoder interface {
 	// Calculate the Cost for adding literals or matches, or both
+	// Returns the cost in *bits*
 	Cost(litCount int, m Match) int
 
 	// Apply N literals to the internal state

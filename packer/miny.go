@@ -137,8 +137,8 @@ func FindLongestMatch(data []byte, head int, distance int) Match {
 
 func FindCheapestMatch(enc Encoder, data []byte, head int, distance int) Match {
 	bestMatch := Match{0, 0}
-	// Any pack rate of less than 1.0 is automatically useless!
-	var bestCost float64 = 1.0
+	// Any pack rate of less than 8 bits/byte is automatically useless
+	var bestCost float64 = 8.0
 	maxDist := distance
 	if head < distance {
 		maxDist = head

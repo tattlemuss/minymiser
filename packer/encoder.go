@@ -24,7 +24,7 @@ type Encoder interface {
 	ApplyMatch(m Match)
 
 	// Encodes a single token a binary stream.
-	Encode(t *Token, output []byte, input []byte) []byte
+	Encode(t *Token, p *PackStream, input []byte)
 
 	// Unpacks the given packed binary stream.
 	Decode(input []byte) []byte

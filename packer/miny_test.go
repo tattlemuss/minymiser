@@ -10,7 +10,6 @@ func costsForMatches(enc Encoder, test *testing.T) {
 	var m Match
 
 	input := make([]byte, 512)
-	var encoded []byte
 	t.isMatch = true
 	for tlen := 1; tlen < 512; tlen++ {
 		m.len = tlen
@@ -19,11 +18,12 @@ func costsForMatches(enc Encoder, test *testing.T) {
 			m.off = toff
 			t.off = toff
 			cost := enc.Cost(0, m)
-			encoded = make([]byte, 0)
-			encoded = enc.Encode(&t, encoded, input)
-			if len(encoded) != cost {
+			encoded := NewPackStream()
+			enc.Encode(&t, encoded, input)
+			fs := encoded.FinalStream()
+			if len(fs) != cost {
 				test.Errorf("match_cost failure, len %d off %d: got %d, want %d",
-					tlen, toff, len(encoded), cost)
+					tlen, toff, len(fs), cost)
 			}
 		}
 	}
@@ -34,16 +34,16 @@ func costsForLits(enc Encoder, test *testing.T) {
 	var m Match
 
 	input := make([]byte, 512)
-	var encoded []byte
 
 	t.isMatch = false
 	for tlen := 1; tlen < 512; tlen++ {
 		cost := enc.Cost(tlen, m)
 		t.len = tlen
-		encoded = make([]byte, 0)
-		encoded = enc.Encode(&t, encoded, input)
-		if len(encoded) != cost {
-			test.Errorf("lit_cost failure: len %d: result %d, expected %d", tlen, len(encoded), cost)
+		encoded := NewPackStream()
+		enc.Encode(&t, encoded, input)
+		fs := encoded.FinalStream()
+		if len(fs) != cost {
+			test.Errorf("lit_cost failure: len %d: result %d, expected %d", tlen, len(fs), cost)
 		}
 		enc.Reset()
 	}

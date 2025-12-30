@@ -778,7 +778,6 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 		regData := ymStr.streamData[strmIdx]
 		tokens := TokenizeLazy(enc, regData, true, cfg)
 		p := NewPackStream()
-		output := make([]byte, 0)
 		for i := 0; i < len(tokens); i++ {
 			enc.Encode(&tokens[i], p, regData)
 		}
@@ -786,7 +785,7 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 			fmt.Println(err)
 			messages <- SmallResult{strmIdx, 0, 0}
 		} else {
-			messages <- SmallResult{strmIdx, regCacheSize, len(output)}
+			messages <- SmallResult{strmIdx, regCacheSize, p.BitCount()}
 		}
 	}
 

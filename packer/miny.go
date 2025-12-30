@@ -400,7 +400,7 @@ func PrintMap(m *map[int]int) float64 {
 		return (*m)[keys[i]] > (*m)[keys[j]]
 	})
 
-	if false {
+	if true {
 		accum := 0
 		for _, k := range keys {
 			cnt := (*m)[k]
@@ -415,18 +415,18 @@ func PrintMap(m *map[int]int) float64 {
 				fmt.Printf("[% 4d] %d\n", k, cnt)
 			}
 			if total_pc > 95 {
-				break
+				//break
 			}
 		}
 	}
 	// Let's do an experiment
 	// If the value is in the top 6, encode as 4 bits
 	// else encode as 8 bits (0-256) etc
-	for prefixSize := 1; prefixSize < 8; prefixSize++ {
+	for prefixSize := 1; prefixSize < 15; prefixSize++ {
 		testSize := 0
-		for idx, k := range keys {
+		for idx, val := range keys {
 			tmp := 0
-			cnt := (*m)[k]
+			cnt := (*m)[val]
 			// 0-5 entries (6 bits)
 			// 0		0
 			// 10		1
@@ -440,9 +440,9 @@ func PrintMap(m *map[int]int) float64 {
 			}
 			// Encode old-style
 			tmp = prefixSize // 111111
-			for k > 255 {
+			for val > 255 {
 				tmp += 8
-				k -= 255
+				val -= 255
 			}
 			tmp += 8
 			testSize += tmp * cnt

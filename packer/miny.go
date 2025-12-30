@@ -837,7 +837,7 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 			fmt.Println(err)
 			messages <- SmallResult{strmIdx, 0, 0}
 		} else {
-			messages <- SmallResult{strmIdx, regCacheSize, p.BitCount()}
+			messages <- SmallResult{strmIdx, regCacheSize, (p.BitCount() + 7) / 8}
 		}
 	}
 

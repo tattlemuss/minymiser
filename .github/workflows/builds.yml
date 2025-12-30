@@ -31,6 +31,7 @@ jobs:
     - name: Test
       run: |
         cd packer
+        go test
         ./miny help
         ./miny small --verbose ../test_data/sanxion.ym out.ymp
         ls -l

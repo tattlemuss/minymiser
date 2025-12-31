@@ -96,6 +96,7 @@ func GetEncoder(choice int) (Encoder, error) {
 
 type UserConfig struct {
 	verbose bool
+	padding bool
 	encoder int // 1 or 2
 }
 
@@ -625,11 +626,11 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 
 	// ... then the data
 	outputData = append(outputData, p.byteData...)
+	cacheSize := Sum(fileCfg.cacheSizes)
 
 	if report {
 		origSize := ymStr.dataSize
 		packedSize := len(outputData)
-		cacheSize := Sum(fileCfg.cacheSizes)
 		totalSize := cacheSize + packedSize
 		bpf := float32(packedSize) / float32(ymStr.numVbls)
 
@@ -654,6 +655,13 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 			optimBytes += float64(stats.litSize)
 			fmt.Printf("Total optimum bytes: %.1f\n", optimBytes)
 		}
+	}
+	// Add optional padding *after* the report,
+	// otherwise the total size looks wrong.
+	if fileCfg.uc.padding {
+
+		padData := make([]byte, cacheSize)
+		outputData = append(outputData, padData...)
 	}
 
 	return outputData, nil
@@ -1064,19 +1072,21 @@ func PrintUsage(commands map[string]CliCommand) {
 
 func main() {
 	uc := UserConfig{}
+	addCommonFlags := func(fs *flag.FlagSet) {
+		fs.BoolVar(&uc.verbose, "verbose", false, "verbose output")
+		fs.BoolVar(&uc.padding, "padding", false, "add zero bytes for cache into file")
+		fs.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
+	}
 	customFlags := flag.NewFlagSet("pack", flag.ExitOnError)
-	customFlags.BoolVar(&uc.verbose, "verbose", false, "verbose output")
-	customFlags.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
+	addCommonFlags(customFlags)
 	//unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
 
 	quickFlags := flag.NewFlagSet("minpack", flag.ExitOnError)
-	quickFlags.BoolVar(&uc.verbose, "verbose", false, "verbose output")
-	quickFlags.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
+	addCommonFlags(quickFlags)
 	packOptSize := customFlags.Int("cachesize", numStreams*512, "overall cache size in bytes")
 
 	smallFlags := flag.NewFlagSet("smallest", flag.ExitOnError)
-	smallFlags.BoolVar(&uc.verbose, "verbose", false, "verbose output")
-	smallFlags.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
+	addCommonFlags(smallFlags)
 
 	simpleFlags := flag.NewFlagSet("simple", flag.ExitOnError)
 	deltaFlags := flag.NewFlagSet("delta", flag.ExitOnError)
@@ -1155,8 +1165,7 @@ func main() {
 	}
 
 	commands = map[string]CliCommand{
-		"pack": {cmdCustom, customFlags, "<input> <output>", "pack with custom settings"},
-		//"unpack":   {nil, unpackCmd, "<input> <output>", "unpack to YM3 format (TBD)"},
+		"pack":   {cmdCustom, customFlags, "<input> <output>", "pack with custom settings"},
 		"quick":  {cmdQuick, quickFlags, "<input> <output>", "pack to small with quick runtime"},
 		"small":  {cmdSmall, smallFlags, "<input> <output>", "pack to smallest runtime memory (more CPU)"},
 		"simple": {cmdSimple, simpleFlags, "<input> <output>", "de-interleave to per-frame register values"},

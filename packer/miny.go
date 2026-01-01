@@ -299,7 +299,7 @@ func TokenizeLazy(enc Encoder, data []byte, useCheapest bool, cfg StreamPackCfg)
 // into the final YmStreams representation.
 // NOTE: this overwrites contents of some of the original
 // RawRegisters byte slices (for the volume channels)
-func RemapFromRaw(rawRegs *RawRegisters) *YmStreams {
+func RemapFromRaw(rawRegs *RawRegisters) (*YmStreams, error) {
 	// Pull out mixer bits and write into the volume streams
 	for channel := 0; channel < 3; channel++ {
 		target_channel := 8 + channel
@@ -307,8 +307,9 @@ func RemapFromRaw(rawRegs *RawRegisters) *YmStreams {
 		noise_bit := channel + 3
 
 		for i, val := range rawRegs.data[7] {
-			if (rawRegs.data[target_channel][i] & 0xc0) != 0 {
-				panic("wrong data")
+			volVal := rawRegs.data[target_channel][i]
+			if (volVal & 0xc0) != 0 {
+				return nil, fmt.Errorf("Bad volume register value: %x", volVal)
 			}
 			// Put the tone and noise mixer bits into bits
 			// 6 and 7 of the volume
@@ -335,7 +336,7 @@ func RemapFromRaw(rawRegs *RawRegisters) *YmStreams {
 		// Accumulate data size
 		ymStr.dataSize += len(ymStr.streamData[strm])
 	}
-	return &ymStr
+	return &ymStr, nil
 }
 
 // Load an input file and create the ym_streams data object.
@@ -349,7 +350,10 @@ func LoadStreamFile(inputPath string) (*YmStreams, error) {
 	if err != nil {
 		return nil, err
 	}
-	ymStr := RemapFromRaw(rawRegisters)
+	ymStr, err := RemapFromRaw(rawRegisters)
+	if err != nil {
+		return nil, err
+	}
 	return ymStr, nil
 }
 

@@ -456,8 +456,8 @@ func PrintHisto(m *map[int]int) float64 {
 		return (*m)[keys[i]] > (*m)[keys[j]]
 	})
 
-	fmt.Printf("Entropy: %f bits per value (%f total bytes)\n", entropy, totalBytes)
-	if true {
+	fmt.Printf("Entropy: %.2f bits per value (%.2f total bytes)\n", entropy, totalBytes)
+	if false {
 		accum := 0
 		for _, k := range keys {
 			cnt := (*m)[k]
@@ -479,7 +479,7 @@ func PrintHisto(m *map[int]int) float64 {
 	// Let's do an experiment
 	// If the value is in the top 6, encode as 4 bits
 	// else encode as 8 bits (0-256) etc
-	for prefixSize := 1; prefixSize < 15; prefixSize++ {
+	for prefixSize := 1; prefixSize < 3; prefixSize++ {
 		testSize := 0
 		for idx, val := range keys {
 			tmp := 0
@@ -545,8 +545,6 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 	streamCfg := StreamPackCfg{}
 	streamCfg.verbose = fileCfg.uc.verbose
 
-	stats := NewPackStats()
-
 	// Records the tokens needed
 	tokensPerStream := make(TokenStreams, numStreams)
 	enc, err := GetEncoder(fileCfg.uc.encoder)
@@ -563,25 +561,6 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 		regData := ymStr.streamData[strmIdx]
 		tokens := TokenizeLazy(enc, regData, useCheapest, streamCfg)
 		tokensPerStream[strmIdx] = tokens
-
-		// Graph histogram
-		if stats != nil {
-			for i := range tokens {
-				t := &tokens[i]
-				if t.isMatch {
-					stats.lenMap[t.len]++
-					stats.distMap[t.off]++
-					stats.offs = append(stats.offs, t.off)
-					stats.lens = append(stats.lens, t.len)
-					stats.numMatches++
-					stats.matchSize += t.len
-				} else {
-					stats.litSize += t.len
-					stats.litlenMap[t.len]++
-				}
-			}
-			stats.numTokens += len(tokens)
-		}
 	}
 
 	// Group the registers into sets with the same size
@@ -703,21 +682,6 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 		fmt.Printf("Num cache sizes:  %6d (smaller=faster)\n", len(sets))
 		fmt.Printf("Total cache size: %6d\n", cacheSize)
 		fmt.Printf("Total RAM:        %6d (%.1f%%)\n", totalSize, Percent(totalSize, origSize))
-
-		if fileCfg.uc.verbose && stats != nil {
-			fmt.Printf("Num matches       %6d (%.1f%%)\n", stats.numMatches, Percent(stats.numMatches, stats.numTokens))
-			fmt.Printf("Num tokens        %6d (%.2f tokens/frame)\n", stats.numTokens, float32(stats.numTokens)/float32(ymStr.numVbls))
-
-			fmt.Printf("Matched size      %6d (%.1f%%)\n", stats.matchSize, Percent(stats.matchSize, origSize))
-			fmt.Println("\nMatch Distances:")
-			optimBytes := PrintHisto(&stats.distMap)
-			fmt.Println("\nMatch Lengths:")
-			optimBytes += PrintHisto(&stats.lenMap)
-			fmt.Println("\nLiteral Lengths:")
-			optimBytes += PrintHisto(&stats.litlenMap)
-			optimBytes += float64(stats.litSize)
-			fmt.Printf("Total optimum bytes: %.1f\n", optimBytes)
-		}
 	}
 
 	// Add optional padding *after* the report,
@@ -731,14 +695,48 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 	pr := PackResults{
 		packedData: outputData,
 		tokens:     &tokensPerStream,
-		stats:      stats,
 	}
 	return &pr, nil
 }
 
-func WriteOutputs(outputPath string, packResults *PackResults, fileCfg *FilePackConfig) error {
+func WriteOutputs(outputPath string, packResults *PackResults, fileCfg *FilePackConfig,
+	orig *YmStreams) error {
+
 	if fileCfg.uc.analysis {
-		stats := packResults.stats
+		// Generate the stats from the token set...
+		stats := NewPackStats()
+		// Graph histogram
+		for strIdx := range *packResults.tokens {
+			ts := (*packResults.tokens)[strIdx]
+			for i := range ts {
+				t := ts[i]
+				if t.isMatch {
+					stats.lenMap[t.len]++
+					stats.distMap[t.off]++
+					stats.offs = append(stats.offs, t.off)
+					stats.lens = append(stats.lens, t.len)
+					stats.numMatches++
+					stats.matchSize += t.len
+				} else {
+					stats.litSize += t.len
+					stats.litlenMap[t.len]++
+				}
+			}
+			stats.numTokens += len(ts)
+		}
+
+		fmt.Printf("Num matches       %6d (%.1f%%)\n", stats.numMatches, Percent(stats.numMatches, stats.numTokens))
+		fmt.Printf("Num tokens        %6d (%.2f tokens/frame)\n", stats.numTokens, float32(stats.numTokens)/float32(orig.numVbls))
+		fmt.Printf("Matched size      %6d (%.1f%%)\n", stats.matchSize, Percent(stats.matchSize, orig.dataSize))
+		fmt.Println("\nMatch Distances:")
+		optimBytes := PrintHisto(&stats.distMap)
+		fmt.Println("\nMatch Lengths:")
+		optimBytes += PrintHisto(&stats.lenMap)
+		fmt.Println("\nLiteral Lengths:")
+		optimBytes += PrintHisto(&stats.litlenMap)
+		optimBytes += float64(stats.litSize)
+		fmt.Printf("Total optimum bytes: %.1f\n", optimBytes)
+
 		WriteHisto(&stats.distMap, outputPath+".mdist.csv")
 		WriteHisto(&stats.lenMap, outputPath+".mlen.csv")
 		WriteHisto(&stats.litlenMap, outputPath+".llen.csv")
@@ -760,7 +758,7 @@ func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) 
 		return err
 	}
 
-	err = WriteOutputs(outputPath, packedData, &fileCfg)
+	err = WriteOutputs(outputPath, packedData, &fileCfg, ymStr)
 	return err
 }
 
@@ -848,7 +846,7 @@ func CommandQuick(inputPath string, outputPath string, uc UserConfig) error {
 	if err != nil {
 		return err
 	}
-	err = WriteOutputs(outputPath, packedData, &fileCfg)
+	err = WriteOutputs(outputPath, packedData, &fileCfg, ymStr)
 	return err
 }
 
@@ -996,7 +994,7 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 	if err != nil {
 		return err
 	}
-	err = WriteOutputs(outputPath, packResult, &smallCfg)
+	err = WriteOutputs(outputPath, packResult, &smallCfg, ymStr)
 	return nil
 }
 

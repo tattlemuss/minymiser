@@ -414,7 +414,26 @@ func WriteHisto(m *map[int]int, path string) error {
 	})
 
 	for _, k := range keys {
-		fh.Write([]byte(fmt.Sprintf("%d,%d\n", k, (*m)[k])))
+		fmt.Fprintf(fh, "%d,%d\n", k, (*m)[k])
+	}
+	fh.Close()
+	return nil
+}
+
+func WriteTokenDump(tokens *TokenStreams, path string) error {
+	fh, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	for strIdx := range *tokens {
+		ts := &(*tokens)[strIdx]
+		for _, t := range *ts {
+			typStr := 'l'
+			if t.isMatch {
+				typStr = 'm'
+			}
+			fmt.Fprintf(fh, "%c,%d,%d\n", typStr, t.len, t.off)
+		}
 	}
 	fh.Close()
 	return nil
@@ -509,9 +528,17 @@ func PrintHisto(m *map[int]int) float64 {
 	return totalBytes
 }
 
+type TokenStreams [][]Token
+
+type PackResults struct {
+	packedData []byte
+	tokens     *TokenStreams
+	stats      *PackStats
+}
+
 // Core function to ack a YM3 data file and return an encoded array of bytes.
 func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
-	report bool, verify bool) ([]byte, *PackStats, error) {
+	report bool, verify bool) (*PackResults, error) {
 	// Compression settings
 	useCheapest := false
 
@@ -521,10 +548,10 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 	stats := NewPackStats()
 
 	// Records the tokens needed
-	tokensPerStream := make([][]Token, numStreams)
+	tokensPerStream := make(TokenStreams, numStreams)
 	enc, err := GetEncoder(fileCfg.uc.encoder)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
@@ -701,16 +728,23 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 		outputData = append(outputData, padData...)
 	}
 
-	return outputData, stats, nil
+	pr := PackResults{
+		packedData: outputData,
+		tokens:     &tokensPerStream,
+		stats:      stats,
+	}
+	return &pr, nil
 }
 
-func WriteOutputs(outputPath string, packedData []byte, stats *PackStats, fileCfg *FilePackConfig) error {
+func WriteOutputs(outputPath string, packResults *PackResults, fileCfg *FilePackConfig) error {
 	if fileCfg.uc.analysis {
+		stats := packResults.stats
 		WriteHisto(&stats.distMap, outputPath+".mdist.csv")
 		WriteHisto(&stats.lenMap, outputPath+".mlen.csv")
 		WriteHisto(&stats.litlenMap, outputPath+".llen.csv")
+		WriteTokenDump(packResults.tokens, outputPath+".tokens.csv")
 	}
-	err := os.WriteFile(outputPath, packedData, 0644)
+	err := os.WriteFile(outputPath, packResults.packedData, 0644)
 	return err
 }
 
@@ -721,12 +755,12 @@ func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) 
 		return err
 	}
 
-	packedData, stats, err := PackAll(ymStr, fileCfg, true, true)
+	packedData, err := PackAll(ymStr, fileCfg, true, true)
 	if err != nil {
 		return err
 	}
 
-	err = WriteOutputs(outputPath, packedData, stats, &fileCfg)
+	err = WriteOutputs(outputPath, packedData, &fileCfg)
 	return err
 }
 
@@ -745,12 +779,12 @@ func MinpackFindCacheSize(ymStr *YmStreams, minCacheSize int, maxCacheSize int,
 
 	// Async func to pack the file and return sizes
 	FindPackedSizeFunc := func(regCacheSize int, ymStr *YmStreams, cfg FilePackConfig) {
-		packedData, _, err := PackAll(ymStr, cfg, false, false)
+		packResult, err := PackAll(ymStr, cfg, false, false)
 		if err != nil {
 			fmt.Println(err)
 			messages <- MinpackResult{0, 0, 0}
 		} else {
-			messages <- MinpackResult{regCacheSize, Sum(cfg.cacheSizes), len(packedData)}
+			messages <- MinpackResult{regCacheSize, Sum(cfg.cacheSizes), len(packResult.packedData)}
 		}
 	}
 
@@ -810,11 +844,11 @@ func CommandQuick(inputPath string, outputPath string, uc UserConfig) error {
 	fileCfg := FilePackConfig{}
 	fileCfg.uc = uc
 	fileCfg.cacheSizes = FilledSlice(numStreams, smallestCacheSize)
-	packedData, stats, err := PackAll(ymStr, fileCfg, true, true)
+	packedData, err := PackAll(ymStr, fileCfg, true, true)
 	if err != nil {
 		return err
 	}
-	err = WriteOutputs(outputPath, packedData, stats, &fileCfg)
+	err = WriteOutputs(outputPath, packedData, &fileCfg)
 	return err
 }
 
@@ -958,11 +992,11 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 	}
 
 	// Write out a final minimal file
-	packedData, stats, err := PackAll(ymStr, smallCfg, true, true)
+	packResult, err := PackAll(ymStr, smallCfg, true, true)
 	if err != nil {
 		return err
 	}
-	err = WriteOutputs(outputPath, packedData, stats, &smallCfg)
+	err = WriteOutputs(outputPath, packResult, &smallCfg)
 	return nil
 }
 

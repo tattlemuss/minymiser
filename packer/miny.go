@@ -95,9 +95,10 @@ func GetEncoder(choice int) (Encoder, error) {
 }
 
 type UserConfig struct {
-	verbose bool
-	padding bool
-	encoder int // 1 or 2
+	verbose  bool
+	padding  bool
+	analysis bool
+	encoder  int // 1 or 2
 }
 
 // Describes packing config for a whole file
@@ -365,6 +366,14 @@ type PackStats struct {
 	litSize    int
 }
 
+func NewPackStats() *PackStats {
+	var stats PackStats
+	stats.lenMap = make(map[int]int)
+	stats.distMap = make(map[int]int)
+	stats.litlenMap = make(map[int]int)
+	return &stats
+}
+
 // Returns total population of map, and entropy per sample
 func Entropy(m *map[int]int) (float64, int) {
 	tot := 0
@@ -384,7 +393,31 @@ func Entropy(m *map[int]int) (float64, int) {
 	return entropy, tot
 }
 
-func PrintMap(m *map[int]int) float64 {
+// Write a population histogram to a CSV file
+func WriteHisto(m *map[int]int, path string) error {
+	fh, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+
+	// Sorted list of keys
+	keys := make([]int, 0, len(*m))
+	for k := range *m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+
+	for _, k := range keys {
+		fh.Write([]byte(fmt.Sprintf("%d,%d\n", k, (*m)[k])))
+	}
+	fh.Close()
+	return nil
+}
+
+// Output histogram to stdout
+func PrintHisto(m *map[int]int) float64 {
 	max := 0
 	keys := make([]int, 0, len(*m))
 	for k := range *m {
@@ -396,11 +429,11 @@ func PrintMap(m *map[int]int) float64 {
 	}
 	entropy, tot := Entropy(m)
 	totalBytes := float64(tot) * entropy / 8
-	fmt.Printf("Entropy: %f bits per value (%f total bytes)\n", entropy, totalBytes)
 	sort.Slice(keys, func(i, j int) bool {
 		return (*m)[keys[i]] > (*m)[keys[j]]
 	})
 
+	fmt.Printf("Entropy: %f bits per value (%f total bytes)\n", entropy, totalBytes)
 	if true {
 		accum := 0
 		for _, k := range keys {
@@ -415,8 +448,8 @@ func PrintMap(m *map[int]int) float64 {
 			} else {
 				fmt.Printf("[% 4d] %d\n", k, cnt)
 			}
-			if total_pc > 95 {
-				//break
+			if total_pc > 90 {
+				break
 			}
 		}
 	}
@@ -474,23 +507,20 @@ func PrintMap(m *map[int]int) float64 {
 
 // Core function to ack a YM3 data file and return an encoded array of bytes.
 func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
-	report bool, verify bool) ([]byte, error) {
+	report bool, verify bool) ([]byte, *PackStats, error) {
 	// Compression settings
 	useCheapest := false
 
 	streamCfg := StreamPackCfg{}
 	streamCfg.verbose = fileCfg.uc.verbose
 
-	var stats PackStats
-	stats.lenMap = make(map[int]int)
-	stats.distMap = make(map[int]int)
-	stats.litlenMap = make(map[int]int)
+	stats := NewPackStats()
 
 	// Records the tokens needed
 	tokensPerStream := make([][]Token, numStreams)
 	enc, err := GetEncoder(fileCfg.uc.encoder)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	for strmIdx := 0; strmIdx < numStreams; strmIdx++ {
@@ -504,21 +534,23 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 		tokensPerStream[strmIdx] = tokens
 
 		// Graph histogram
-		for i := range tokens {
-			t := &tokens[i]
-			if t.isMatch {
-				stats.lenMap[t.len]++
-				stats.distMap[t.off]++
-				stats.offs = append(stats.offs, t.off)
-				stats.lens = append(stats.lens, t.len)
-				stats.numMatches++
-				stats.matchSize += t.len
-			} else {
-				stats.litSize += t.len
-				stats.litlenMap[t.len]++
+		if stats != nil {
+			for i := range tokens {
+				t := &tokens[i]
+				if t.isMatch {
+					stats.lenMap[t.len]++
+					stats.distMap[t.off]++
+					stats.offs = append(stats.offs, t.off)
+					stats.lens = append(stats.lens, t.len)
+					stats.numMatches++
+					stats.matchSize += t.len
+				} else {
+					stats.litSize += t.len
+					stats.litlenMap[t.len]++
+				}
 			}
+			stats.numTokens += len(tokens)
 		}
-		stats.numTokens += len(tokens)
 	}
 
 	// Group the registers into sets with the same size
@@ -641,21 +673,22 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 		fmt.Printf("Total cache size: %6d\n", cacheSize)
 		fmt.Printf("Total RAM:        %6d (%.1f%%)\n", totalSize, Percent(totalSize, origSize))
 
-		if fileCfg.uc.verbose {
+		if fileCfg.uc.verbose && stats != nil {
 			fmt.Printf("Num matches       %6d (%.1f%%)\n", stats.numMatches, Percent(stats.numMatches, stats.numTokens))
 			fmt.Printf("Num tokens        %6d (%.2f tokens/frame)\n", stats.numTokens, float32(stats.numTokens)/float32(ymStr.numVbls))
 
 			fmt.Printf("Matched size      %6d (%.1f%%)\n", stats.matchSize, Percent(stats.matchSize, origSize))
 			fmt.Println("\nMatch Distances:")
-			optimBytes := PrintMap(&stats.distMap)
+			optimBytes := PrintHisto(&stats.distMap)
 			fmt.Println("\nMatch Lengths:")
-			optimBytes += PrintMap(&stats.lenMap)
+			optimBytes += PrintHisto(&stats.lenMap)
 			fmt.Println("\nLiteral Lengths:")
-			optimBytes += PrintMap(&stats.litlenMap)
+			optimBytes += PrintHisto(&stats.litlenMap)
 			optimBytes += float64(stats.litSize)
 			fmt.Printf("Total optimum bytes: %.1f\n", optimBytes)
 		}
 	}
+
 	// Add optional padding *after* the report,
 	// otherwise the total size looks wrong.
 	if fileCfg.uc.padding {
@@ -664,7 +697,17 @@ func PackAll(ymStr *YmStreams, fileCfg FilePackConfig,
 		outputData = append(outputData, padData...)
 	}
 
-	return outputData, nil
+	return outputData, stats, nil
+}
+
+func WriteOutputs(outputPath string, packedData []byte, stats *PackStats, fileCfg *FilePackConfig) error {
+	if fileCfg.uc.analysis {
+		WriteHisto(&stats.distMap, outputPath+".mdist.csv")
+		WriteHisto(&stats.lenMap, outputPath+".mlen.csv")
+		WriteHisto(&stats.litlenMap, outputPath+".llen.csv")
+	}
+	err := os.WriteFile(outputPath, packedData, 0644)
+	return err
 }
 
 // Pack a file with custom config like cache size.
@@ -674,30 +717,31 @@ func CommandCustom(inputPath string, outputPath string, fileCfg FilePackConfig) 
 		return err
 	}
 
-	packedData, err := PackAll(ymStr, fileCfg, true, true)
+	packedData, stats, err := PackAll(ymStr, fileCfg, true, true)
 	if err != nil {
 		return err
 	}
 
-	err = os.WriteFile(outputPath, packedData, 0644)
+	err = WriteOutputs(outputPath, packedData, stats, &fileCfg)
 	return err
-}
-
-type MinpackResult struct {
-	regCacheSize int // size of cache for a single register
-	cacheSize    int // total size of all caches added together
-	packedSize   int
 }
 
 // Choose the cache size which gives minimal sum of
 // [packed file size] + [cache size]
 func MinpackFindCacheSize(ymStr *YmStreams, minCacheSize int, maxCacheSize int,
 	cacheSizeStep int, phase string, encoder int) (int, error) {
+
+	type MinpackResult struct {
+		regCacheSize int // size of cache for a single register
+		cacheSize    int // total size of all caches added together
+		packedSize   int
+	}
+
 	messages := make(chan MinpackResult, 5)
 
 	// Async func to pack the file and return sizes
 	FindPackedSizeFunc := func(regCacheSize int, ymStr *YmStreams, cfg FilePackConfig) {
-		packedData, err := PackAll(ymStr, cfg, false, false)
+		packedData, _, err := PackAll(ymStr, cfg, false, false)
 		if err != nil {
 			fmt.Println(err)
 			messages <- MinpackResult{0, 0, 0}
@@ -762,12 +806,11 @@ func CommandQuick(inputPath string, outputPath string, uc UserConfig) error {
 	fileCfg := FilePackConfig{}
 	fileCfg.uc = uc
 	fileCfg.cacheSizes = FilledSlice(numStreams, smallestCacheSize)
-	packedData, err := PackAll(ymStr, fileCfg, true, true)
+	packedData, stats, err := PackAll(ymStr, fileCfg, true, true)
 	if err != nil {
 		return err
 	}
-
-	err = os.WriteFile(outputPath, packedData, 0644)
+	err = WriteOutputs(outputPath, packedData, stats, &fileCfg)
 	return err
 }
 
@@ -818,13 +861,13 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 		return err
 	}
 
-	stats := PerRegStats{}
-	stats.totalPackedSizes = make(map[int][]int)
+	perRegStats := PerRegStats{}
+	perRegStats.totalPackedSizes = make(map[int][]int)
 	minSize := 8
 	maxSize := 1024
 	step := 16
 	for size := minSize; size < maxSize; size += step {
-		stats.totalPackedSizes[size] = make([]int, numStreams)
+		perRegStats.totalPackedSizes[size] = make([]int, numStreams)
 	}
 
 	messages := make(chan SmallResult, 15)
@@ -863,7 +906,7 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 			msg := <-messages
 			csize := msg.cacheSize
 			total := msg.cacheSize + msg.packedSize
-			stats.totalPackedSizes[csize][strmIdx] = total
+			perRegStats.totalPackedSizes[csize][strmIdx] = total
 		}
 
 	}
@@ -881,8 +924,8 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 		minTotal := 9999999
 		minCache := minTotal
 
-		for csize := range stats.totalPackedSizes {
-			total := stats.totalPackedSizes[csize][strmIdx]
+		for csize := range perRegStats.totalPackedSizes {
+			total := perRegStats.totalPackedSizes[csize][strmIdx]
 			if total < minTotal {
 				minTotal = total
 				minCache = csize
@@ -911,32 +954,11 @@ func CommandSmall(inputPath string, outputPath string, uc UserConfig) error {
 	}
 
 	// Write out a final minimal file
-	packedFile, err := PackAll(ymStr, smallCfg, true, true)
+	packedData, stats, err := PackAll(ymStr, smallCfg, true, true)
 	if err != nil {
 		return err
 	}
-	err = os.WriteFile(outputPath, packedFile, 0644)
-	if err != nil {
-		return err
-	}
-
-	if false {
-		// This is experimental code to force a pack with
-		// 2 cache sizes only.
-		for split := 1; split < numStreams-1; split++ {
-			// Make 2 lists, the "small" list and the big one
-			smallList := statsForRegs[:split]
-			bigList := statsForRegs[split:]
-
-			smallCache, smallTotal := FindSmallestTotalSize(&stats, smallList)
-			bigCache, bigTotal := FindSmallestTotalSize(&stats, bigList)
-
-			finalSize := smallTotal + bigTotal
-			fmt.Printf("total size with caches %d/%d -> %d (loss %d)\n",
-				smallCache, bigCache, finalSize, bestTotalSize-finalSize)
-		}
-	}
-
+	err = WriteOutputs(outputPath, packedData, stats, &smallCfg)
 	return nil
 }
 
@@ -1075,11 +1097,11 @@ func main() {
 	addCommonFlags := func(fs *flag.FlagSet) {
 		fs.BoolVar(&uc.verbose, "verbose", false, "verbose output")
 		fs.BoolVar(&uc.padding, "padding", false, "add zero bytes for cache into file")
+		fs.BoolVar(&uc.analysis, "analysis", false, "output analysis CSV files")
 		fs.IntVar(&uc.encoder, "encoder", 1, "encoder version (1|2)")
 	}
 	customFlags := flag.NewFlagSet("pack", flag.ExitOnError)
 	addCommonFlags(customFlags)
-	//unpackCmd := flag.NewFlagSet("unpack", flag.ExitOnError)
 
 	quickFlags := flag.NewFlagSet("minpack", flag.ExitOnError)
 	addCommonFlags(quickFlags)
